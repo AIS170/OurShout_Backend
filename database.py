@@ -37,6 +37,7 @@ def create_employees_table():
         job_title TEXT,
         role TEXT DEFAULT 'EMPLOYEE',
         status TEXT DEFAULT 'ACTIVE',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (team_id) REFERENCES teams(team_id),
         FOREIGN KEY (manager_id) REFERENCES employees(employee_id)
     );
