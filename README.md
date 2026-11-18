@@ -76,7 +76,7 @@ python seed.py
 
 This will initialize `data/ourshout.db` with 55 employees, 10 teams, 5 official principles, demo recognition cards, reciprocal alerts, and outbox email items.
 
----
+----
 
 ## 6. Running the Server
 
