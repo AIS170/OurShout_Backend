@@ -3,6 +3,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from database import init_db
 from src.auth.routes import auth_bp
+from src.shoutouts.routes import shoutouts_bp
 
 def create_app():
     app = Flask(__name__)
@@ -12,6 +13,7 @@ def create_app():
 
     # Register API Blueprints
     app.register_blueprint(auth_bp)
+    app.register_blueprint(shoutouts_bp)
 
     @app.route("/health", methods=["GET"])
     def health():
