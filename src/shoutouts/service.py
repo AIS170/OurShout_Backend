@@ -1,10 +1,12 @@
 """
-Newsfeed service: reads, likes and edits shout-outs.
+Shout-out service: the newsfeed, likes, edits, giving a shout-out, and the directory
+lookups the forms need.
 
 Rules enforced here (section A4 of the build plan):
 - The feed only ever returns VISIBLE posts from the caller's country.
 - Likes are idempotent, and like_count is updated in the same transaction.
 - Only the sender can edit a post, and only while it is VISIBLE. Recipients never change.
+- Nobody can recognise themselves, and every recipient must be an active employee.
 """
 import base64
 import json
@@ -362,3 +364,180 @@ def list_teams(conn, country: str) -> List[Dict[str, Any]]:
         {"teamId": row["team_id"], "teamName": row["team_name"], "memberCount": row["member_count"]}
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------- directory lookups
+
+_EMPLOYEE_SELECT = """
+    SELECT e.*, t.team_name
+    FROM employees e
+    LEFT JOIN teams t ON t.team_id = e.team_id
+"""
+
+MIN_SEARCH_LENGTH = 2
+MAX_SEARCH_RESULTS = 25
+
+
+def search_directory(conn, viewer: Dict[str, Any], query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    GET /api/directory/search. People you can recognise: active employees in your country,
+    never yourself. Every word typed must match the start of a word in the name, any case.
+    """
+    terms = query.strip().split()
+    if len(query.strip()) < MIN_SEARCH_LENGTH or not terms:
+        raise ShoutoutError(
+            "VALIDATION_FAILED", f"Type at least {MIN_SEARCH_LENGTH} characters to search.", 400
+        )
+    limit = max(1, min(limit, MAX_SEARCH_RESULTS))
+
+    where = ["e.status != 'INACTIVE'", "e.country = ?", "e.employee_id != ?"]
+    params: List[Any] = [viewer["country"], viewer["employeeId"]]
+    for term in terms:
+        # Escape LIKE wildcards so a typed % or _ is matched literally.
+        safe = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(e.employee_name LIKE ? ESCAPE '\\' OR e.employee_name LIKE ? ESCAPE '\\')")
+        params.extend([f"{safe}%", f"% {safe}%"])
+
+    rows = conn.execute(
+        f"{_EMPLOYEE_SELECT} WHERE {' AND '.join(where)} ORDER BY e.employee_name, e.employee_id LIMIT ?",
+        params + [limit],
+    ).fetchall()
+    return [_employee_summary(row) for row in rows]
+
+
+def list_team_members(conn, viewer: Dict[str, Any], team_id: str) -> List[Dict[str, Any]]:
+    """GET /api/teams/:teamId/members. Active members in your country, never yourself."""
+    team = conn.execute("SELECT team_id FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+    if not team:
+        raise ShoutoutError("NOT_FOUND", "Team not found.", 404)
+    rows = conn.execute(
+        f"""{_EMPLOYEE_SELECT}
+            WHERE e.team_id = ? AND e.status != 'INACTIVE' AND e.country = ? AND e.employee_id != ?
+            ORDER BY e.employee_name, e.employee_id""",
+        (team_id, viewer["country"], viewer["employeeId"]),
+    ).fetchall()
+    return [_employee_summary(row) for row in rows]
+
+
+# ---------------------------------------------------------------- create
+
+MIN_TEAM_RECIPIENTS = 2
+MAX_TEAM_RECIPIENTS = 50
+
+
+def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
+    """
+    POST /api/shoutouts. Checks run in the order the build plan sets out:
+    1. shape of the request        -> VALIDATION_FAILED
+    2. sender among the recipients -> SELF_SHOUTOUT
+    3. every recipient is active   -> RECIPIENT_NOT_ACTIVE
+    4. the principle is ACTIVE     -> PRINCIPLE_RETIRED
+    5. a whole-team shout-out matches that team's members exactly -> VALIDATION_FAILED
+    Then the post and its recipients are saved in one transaction.
+
+    Not done here yet, because the pieces don't exist in this codebase: the profanity check
+    (CONTENT_REJECTED) and queueing one email per recipient. Both belong just before the insert.
+    """
+    if not isinstance(body, dict):
+        raise ShoutoutError("VALIDATION_FAILED", "Request body must be a JSON object.", 400)
+
+    # 1. Shape
+    recognition_type = body.get("recognitionType")
+    if recognition_type not in ("INDIVIDUAL", "TEAM"):
+        raise ShoutoutError("VALIDATION_FAILED", "'recognitionType' must be INDIVIDUAL or TEAM.", 400)
+
+    recipient_ids = body.get("recipientIds")
+    if not isinstance(recipient_ids, list) or not all(isinstance(r, str) and r for r in recipient_ids):
+        raise ShoutoutError("VALIDATION_FAILED", "'recipientIds' must be a list of employee IDs.", 400)
+    if len(set(recipient_ids)) != len(recipient_ids):
+        raise ShoutoutError("VALIDATION_FAILED", "Each person can only be recognised once per shout-out.", 400)
+    if recognition_type == "INDIVIDUAL" and len(recipient_ids) != 1:
+        raise ShoutoutError("VALIDATION_FAILED", "An individual shout-out needs exactly one person.", 400)
+    if recognition_type == "TEAM" and not MIN_TEAM_RECIPIENTS <= len(recipient_ids) <= MAX_TEAM_RECIPIENTS:
+        raise ShoutoutError(
+            "VALIDATION_FAILED",
+            f"A team shout-out needs between {MIN_TEAM_RECIPIENTS} and {MAX_TEAM_RECIPIENTS} people.",
+            400,
+        )
+
+    principle_id = body.get("principleId")
+    if isinstance(principle_id, bool) or not isinstance(principle_id, int):
+        raise ShoutoutError("VALIDATION_FAILED", "'principleId' must be a number.", 400)
+
+    reason = _clean_text(body.get("reason"), "reason")
+    impact = _clean_text(body.get("impact"), "impact")
+
+    act_of_kindness = body.get("actOfKindness")
+    if not isinstance(act_of_kindness, bool):
+        raise ShoutoutError("VALIDATION_FAILED", "'actOfKindness' must be true or false.", 400)
+
+    target_team_id = body.get("targetTeamId")
+    if target_team_id is not None and (not isinstance(target_team_id, str) or recognition_type != "TEAM"):
+        raise ShoutoutError("VALIDATION_FAILED", "'targetTeamId' is only for team shout-outs.", 400)
+
+    # 2. No recognising yourself
+    if viewer["employeeId"] in recipient_ids:
+        raise ShoutoutError("SELF_SHOUTOUT", "You can't give a shout-out to yourself.", 400)
+
+    # 3. Every recipient is an active employee
+    marks = ",".join("?" for _ in recipient_ids)
+    active = {
+        row["employee_id"]
+        for row in conn.execute(
+            f"SELECT employee_id FROM employees WHERE status != 'INACTIVE' AND employee_id IN ({marks})",
+            recipient_ids,
+        )
+    }
+    if len(active) != len(recipient_ids):
+        raise ShoutoutError(
+            "RECIPIENT_NOT_ACTIVE", "One of the people you picked is no longer an active employee.", 400
+        )
+
+    # 4. The principle can be used
+    principle = conn.execute("SELECT status FROM principles WHERE id = ?", (principle_id,)).fetchone()
+    if not principle or principle["status"] != "ACTIVE":
+        raise ShoutoutError("PRINCIPLE_RETIRED", "That principle is not available.", 400)
+
+    # 5. A whole-team shout-out is exactly that team's active members, minus the sender
+    if target_team_id is not None:
+        team = conn.execute("SELECT team_id FROM teams WHERE team_id = ?", (target_team_id,)).fetchone()
+        members = {
+            row["employee_id"]
+            for row in conn.execute(
+                "SELECT employee_id FROM employees WHERE team_id = ? AND status != 'INACTIVE' AND employee_id != ?",
+                (target_team_id, viewer["employeeId"]),
+            )
+        }
+        if not team or members != set(recipient_ids):
+            raise ShoutoutError(
+                "VALIDATION_FAILED", "The people picked don't match that team's current members.", 400
+            )
+
+    # 6. (Profanity check goes here once the moderation service exists.)
+
+    # 7. Save everything together
+    try:
+        cursor = conn.execute("""
+            INSERT INTO shoutouts (sender_id, recognition_type, target_team_id, principle_id, reason, impact,
+                                   act_of_kindness, country, visibility, like_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE', 0, ?)
+        """, (
+            viewer["employeeId"], recognition_type, target_team_id, principle_id, reason, impact,
+            1 if act_of_kindness else 0, viewer["country"], utc_now_iso(),
+        ))
+        shoutout_id = cursor.lastrowid
+        conn.executemany(
+            "INSERT INTO shoutout_recipients (shoutout_id, recipient_id) VALUES (?, ?)",
+            [(shoutout_id, recipient_id) for recipient_id in recipient_ids],
+        )
+        _record_audit(
+            conn, viewer["employeeId"], "SHOUTOUT_CREATED", shoutout_id, {},
+            {"recipientIds": recipient_ids, "principleId": principle_id},
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    created = _get_visible_row(conn, shoutout_id, viewer)
+    return _build_dtos(conn, [created], viewer["employeeId"])[0]
