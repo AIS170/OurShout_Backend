@@ -33,10 +33,10 @@ def mock_login():
     Issues 8-hour JWT token mirroring Entra ID claims.
     """
     data = request.get_json(silent=True) or {}
-    persona_id = data.get("personaId")
+    persona_id = data.get("personaId") or data.get("username")
 
     if not persona_id:
-        return make_error("VALIDATION_FAILED", "Field 'personaId' is required.", 400)
+        return make_error("VALIDATION_FAILED", "Field 'username' or 'personaId' is required.", 400)
 
     persona = get_persona_by_id(persona_id)
     if not persona:

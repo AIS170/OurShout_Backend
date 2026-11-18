@@ -115,14 +115,23 @@ def get_personas() -> List[Dict[str, Any]]:
             "personaId": p["personaId"],
             "label": p["label"],
             "description": p["description"],
-            "expected": p["expected"]
+            "expected": p["expected"],
+            "email": p["email"],
+            "employeeId": p["employeeId"],
+            "name": p["name"],
+            "roles": p["roles"]
         }
         for p in PERSONAS
     ]
 
 def get_persona_by_id(persona_id: str) -> Optional[Dict[str, Any]]:
+    target = persona_id.strip().lower()
     for p in PERSONAS:
-        if p["personaId"] == persona_id:
+        if (
+            p["personaId"].lower() == target
+            or p["email"].lower() == target
+            or p["employeeId"].lower() == target
+        ):
             return p
     return None
 
