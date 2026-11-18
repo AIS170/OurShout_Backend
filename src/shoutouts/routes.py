@@ -10,6 +10,7 @@ from src.shoutouts.service import (
     ShoutoutError,
     create_shoutout,
     edit_shoutout,
+    get_profile,
     list_active_principles,
     list_feed,
     list_team_members,
@@ -172,5 +173,20 @@ def get_team_members(team_id: str):
     conn = get_db()
     try:
         return jsonify(list_team_members(conn, g.user, team_id)), 200
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------- profile
+
+@shoutouts_bp.route("/api/profile/<employee_id>", methods=["GET"])
+@require_auth
+def get_profile_route(employee_id: str):
+    """A person's recognition profile. "me" is accepted in place of your own employee ID."""
+    if employee_id == "me":
+        employee_id = g.user["employeeId"]
+    conn = get_db()
+    try:
+        return jsonify(get_profile(conn, g.user, employee_id)), 200
     finally:
         conn.close()

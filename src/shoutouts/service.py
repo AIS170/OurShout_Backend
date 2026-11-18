@@ -1,6 +1,6 @@
 """
-Shout-out service: the newsfeed, likes, edits, giving a shout-out, and the directory
-lookups the forms need.
+Shout-out service: the newsfeed, likes, edits, giving a shout-out, profiles, and the
+directory lookups the forms need.
 
 Rules enforced here (section A4 of the build plan):
 - The feed only ever returns VISIBLE posts from the caller's country.
@@ -12,6 +12,8 @@ import base64
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from src.auth.service import calculate_points_for_employee
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
@@ -541,3 +543,87 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
 
     created = _get_visible_row(conn, shoutout_id, viewer)
     return _build_dtos(conn, [created], viewer["employeeId"])[0]
+
+
+# ---------------------------------------------------------------- profile
+
+RECENT_RECEIVED_LIMIT = 20
+
+
+def get_profile(conn, viewer: Dict[str, Any], employee_id: str) -> Dict[str, Any]:
+    """
+    GET /api/profile/:employeeId. Returns ProfileDto for anyone in the viewer's country.
+    Only VISIBLE posts count, so a hidden or deleted post drops out of every number here.
+    Each metric is one grouped query; nothing loops over individual posts.
+    """
+    employee = conn.execute(
+        f"{_EMPLOYEE_SELECT} WHERE e.employee_id = ? AND e.country = ?", (employee_id, viewer["country"])
+    ).fetchone()
+    if not employee:
+        raise ShoutoutError("NOT_FOUND", "We couldn't find that person.", 404)
+
+    # Shared conditions: posts this person received, and posts they gave, that the viewer may see.
+    received = """
+        FROM shoutout_recipients sr
+        JOIN shoutouts s ON s.id = sr.shoutout_id
+        WHERE sr.recipient_id = ? AND s.visibility = 'VISIBLE' AND s.country = ?
+    """
+    given = "FROM shoutouts s WHERE s.sender_id = ? AND s.visibility = 'VISIBLE' AND s.country = ?"
+    args = (employee_id, viewer["country"])
+
+    counts = conn.execute(
+        f"SELECT COUNT(*) AS total, COALESCE(SUM(s.act_of_kindness), 0) AS kindness {received}", args
+    ).fetchone()
+    given_count = conn.execute(f"SELECT COUNT(*) AS total {given}", args).fetchone()["total"]
+
+    top_received = conn.execute(f"""
+        SELECT p.name, COUNT(*) AS total
+        {received.replace("WHERE", "JOIN principles p ON p.id = s.principle_id WHERE")}
+        GROUP BY p.id ORDER BY total DESC, p.display_order LIMIT 1
+    """, args).fetchone()
+
+    top_given = conn.execute(f"""
+        SELECT p.name, COUNT(*) AS total
+        {given.replace("WHERE", "JOIN principles p ON p.id = s.principle_id WHERE")}
+        GROUP BY p.id ORDER BY total DESC, p.display_order LIMIT 1
+    """, args).fetchone()
+
+    recommender = conn.execute(f"""
+        SELECT s.sender_id, COUNT(*) AS total, MAX(s.created_at) AS latest
+        {received}
+        GROUP BY s.sender_id ORDER BY total DESC, latest DESC LIMIT 1
+    """, args).fetchone()
+    top_recommender = None
+    if recommender:
+        person = conn.execute(
+            f"{_EMPLOYEE_SELECT} WHERE e.employee_id = ?", (recommender["sender_id"],)
+        ).fetchone()
+        if person:
+            top_recommender = {"employee": _employee_summary(person), "count": recommender["total"]}
+
+    # created_at is an ISO string in UTC, so its first 7 characters are the month (YYYY-MM).
+    busiest = conn.execute(f"""
+        SELECT substr(s.created_at, 1, 7) AS month, COUNT(*) AS total
+        {received}
+        GROUP BY month ORDER BY total DESC, month DESC LIMIT 1
+    """, args).fetchone()
+
+    recent_rows = conn.execute(f"""
+        {_SHOUTOUT_SELECT}
+        WHERE s.visibility = 'VISIBLE' AND s.country = ?
+          AND s.id IN (SELECT shoutout_id FROM shoutout_recipients WHERE recipient_id = ?)
+        ORDER BY s.created_at DESC, s.id DESC LIMIT ?
+    """, (viewer["country"], employee_id, RECENT_RECEIVED_LIMIT)).fetchall()
+
+    return {
+        "employee": _employee_summary(employee),
+        "points": calculate_points_for_employee(conn, employee_id),
+        "receivedCount": counts["total"],
+        "givenCount": given_count,
+        "kindnessReceivedCount": counts["kindness"],
+        "topPrincipleReceived": top_received["name"] if top_received else None,
+        "topRecommender": top_recommender,
+        "busiestMonth": busiest["month"] if busiest else None,
+        "topPrincipleGiven": top_given["name"] if top_given else None,
+        "recentReceived": _build_dtos(conn, recent_rows, viewer["employeeId"]),
+    }
