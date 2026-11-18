@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from database import get_db, init_db
 
 # 15 Official Sandoz Australia Teams
@@ -119,11 +120,119 @@ EMPLOYEES_DATA = [
     ("E0055", "Christopher Foster", "christopher.foster@sandoz.test", "T04", "E0044", "AU", "Senior Data Scientist", "EMPLOYEE", "ACTIVE")
 ]
 
+# Demo shout-outs for the newsfeed. "days_ago" is counted back from the moment you seed, so the
+# feed always looks recent. Use either "to" (hand-picked people) or "team" (every active member
+# of that team except the sender). "liked_by" lists the employees who liked the post.
+SHOUTOUTS_DATA = [
+    {"from": "E0013", "to": ["E0005"], "principle": 5, "kindness": True, "days_ago": 0.4,
+     "reason": "Priya spent her lunch break walking me through the new pharmacy ordering portal.",
+     "impact": "I can now answer my customers' questions myself instead of escalating them.",
+     "liked_by": ["E0011", "E0003", "E0004", "E0039", "E0016", "E0012"]},
+    {"from": "E0005", "to": ["E0013"], "principle": 1, "kindness": True, "days_ago": 1.2,
+     "reason": "Aisha jumped in to help Retail with a hospital stock question that wasn't her job at all.",
+     "impact": "Two pharmacies got their biosimilar orders on time instead of a week late.",
+     "liked_by": ["E0011", "E0003", "E0008", "E0009"]},
+    {"from": "E0048", "to": ["E0049", "E0050"], "principle": 2, "kindness": False, "days_ago": 2.1,
+     "reason": "Aiden and Lily rebuilt the launch pack in four days after the brief changed late.",
+     "impact": "Sales had the new material in hand before the first customer meetings.",
+     "liked_by": ["E0051", "E0003", "E0011"]},
+    {"from": "E0005", "team": "T06", "principle": 2, "kindness": False, "days_ago": 5.0, "edited": True,
+     "reason": "The team ran every onboarding session in October, even with two people on leave. \"Whatever it takes\" & then some!",
+     "impact": "All twelve new starters had their laptops, logins and a buddy on day one.",
+     "liked_by": ["E0005", "E0013", "E0011", "E0001", "E0002", "E0044", "E0048", "E0033", "E0017"]},
+    {"from": "E0013", "to": ["E0005"], "principle": 2, "kindness": False, "days_ago": 6.3,
+     "reason": "Priya chased down three overdue pharmacy orders in one afternoon.",
+     "impact": "Every order shipped the next morning and the customers stayed with us.",
+     "liked_by": ["E0004", "E0003"]},
+    {"from": "E0005", "to": ["E0013"], "principle": 3, "kindness": False, "days_ago": 8.5,
+     "reason": "Aisha wrote a one-page summary of the new hospital tender rules.",
+     "impact": "The whole Sales team now quotes the same terms.",
+     "liked_by": ["E0011", "E0012", "E0016"]},
+    {"from": "E0039", "to": ["E0005", "E0013", "E0011", "E0018", "E0019"], "principle": 3, "kindness": True, "days_ago": 11.0,
+     "reason": "You five wrote the one-page guide to the new leave policy that everyone actually read.",
+     "impact": "Questions to Human Resources dropped by half in the first fortnight.",
+     "liked_by": ["E0005", "E0040", "E0041", "E0042", "E0043", "E0001", "E0002", "E0044", "E0033", "E0048", "E0017", "E0024"]},
+    {"from": "E0013", "to": ["E0005"], "principle": 1, "kindness": True, "days_ago": 13.2,
+     "reason": "Priya covered my hospital visits while I was at the conference.",
+     "impact": "No customer went a week without hearing from us.",
+     "liked_by": ["E0011"]},
+    {"from": "E0005", "to": ["E0013"], "principle": 5, "kindness": False, "days_ago": 15.6,
+     "reason": "Aisha coached me through my first hospital formulary presentation.",
+     "impact": "I ran the next one on my own and the pharmacy director asked for a follow-up.",
+     "liked_by": ["E0004", "E0011", "E0003"]},
+    {"from": "E0011", "to": ["E0013"], "principle": 4, "kindness": False, "days_ago": 20.0,
+     "reason": "Aisha noticed that three hospitals were ordering the same biosimilar through different contracts, pulled the numbers together over a weekend, and brought a single proposal to the Monday meeting. She had already spoken to each account lead, so nobody was surprised and the decision took ten minutes instead of the usual three rounds of email.",
+     "impact": "One contract now covers all three hospitals. Pricing is consistent, the pharmacy teams reorder from one form, and we freed up about a day a month that used to go on reconciling invoices between the three agreements.",
+     "liked_by": ["E0002", "E0001"]},
+    {"from": "E0018", "to": ["E0019"], "principle": 1, "kindness": True, "days_ago": 28.0,
+     "reason": "Zoe stayed back to recheck a pallet that had sat outside the cold chain for a few minutes.",
+     "impact": "We shipped with confidence and the customer never saw a delay.",
+     "liked_by": ["E0017", "E0030", "E0028"]},
+    {"from": "E0019", "to": ["E0018"], "principle": 5, "kindness": False, "days_ago": 35.0,
+     "reason": "Arjun taught me how the warehouse system flags short-dated stock.",
+     "impact": "I caught two batches before they reached the release queue.",
+     "liked_by": ["E0017"]},
+    {"from": "E0044", "to": ["E0055"], "principle": 2, "kindness": False, "days_ago": 46.0,
+     "reason": "Christopher rebuilt the weekly sales forecast so it runs in minutes, not hours.",
+     "impact": "Sales leads now get Monday numbers before their 9am meeting.",
+     "liked_by": ["E0003", "E0011", "E0045", "E0046", "E0047", "E0002", "E0033"]},
+    {"from": "E0011", "to": ["E0005"], "principle": 3, "kindness": False, "days_ago": 61.0,
+     "reason": "Priya wrote up the pharmacy feedback from her September visits in one clear page.",
+     "impact": "Marketing changed the launch pack based on it.",
+     "liked_by": ["E0048", "E0049", "E0003", "E0004", "E0013"]},
+]
+
+def seed_shoutouts(cursor):
+    """Loads the demo shout-outs, their recipients and their likes."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def iso(moment):
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    for post in SHOUTOUTS_DATA:
+        sender = post["from"]
+        team_id = post.get("team")
+        if team_id:
+            recipients = [
+                row["employee_id"] for row in cursor.execute(
+                    "SELECT employee_id FROM employees WHERE team_id = ? AND status = 'ACTIVE' AND employee_id != ?",
+                    (team_id, sender)
+                ).fetchall()
+            ]
+        else:
+            recipients = post["to"]
+
+        created = now - timedelta(days=post["days_ago"])
+        edited = iso(created + timedelta(minutes=30)) if post.get("edited") else None
+        liked_by = post.get("liked_by", [])
+
+        cursor.execute("""
+            INSERT INTO shoutouts (sender_id, recognition_type, target_team_id, principle_id, reason, impact,
+                                   act_of_kindness, country, visibility, like_count, created_at, edited_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'AU', 'VISIBLE', ?, ?, ?)
+        """, (
+            sender, "TEAM" if len(recipients) > 1 else "INDIVIDUAL", team_id, post["principle"],
+            post["reason"], post["impact"], 1 if post["kindness"] else 0, len(liked_by), iso(created), edited
+        ))
+        shoutout_id = cursor.lastrowid
+
+        cursor.executemany(
+            "INSERT INTO shoutout_recipients (shoutout_id, recipient_id) VALUES (?, ?)",
+            [(shoutout_id, recipient) for recipient in recipients]
+        )
+        cursor.executemany(
+            "INSERT INTO likes (shoutout_id, employee_id, created_at) VALUES (?, ?, ?)",
+            [(shoutout_id, liker, iso(created + timedelta(hours=2))) for liker in liked_by]
+        )
+
 def seed_database():
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = OFF;")
 
+    cursor.execute("DROP TABLE IF EXISTS likes;")
+    cursor.execute("DROP TABLE IF EXISTS shoutout_recipients;")
+    cursor.execute("DROP TABLE IF EXISTS shoutouts;")
     cursor.execute("DROP TABLE IF EXISTS app_users;")
     cursor.execute("DROP TABLE IF EXISTS employees;")
     cursor.execute("PRAGMA foreign_keys = ON;")
@@ -150,6 +259,9 @@ def seed_database():
         INSERT OR REPLACE INTO employees (employee_id, employee_name, email_id, team_id, manager_id, country, job_title, role, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, EMPLOYEES_DATA)
+
+    print(f"🌱 Seeding {len(SHOUTOUTS_DATA)} demo shout-outs with recipients and likes...")
+    seed_shoutouts(cursor)
 
     cursor.execute("PRAGMA foreign_keys = ON;")
     conn.commit()
