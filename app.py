@@ -4,6 +4,9 @@ from flask_cors import CORS
 from database import init_db
 from src.auth.routes import auth_bp
 from src.shoutouts.routes import shoutouts_bp
+from src.admin.routes import admin_bp
+from src.leaderboard.routes import leaderboard_bp
+from src.reports.routes import reports_bp
 
 def create_app():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +25,9 @@ def create_app():
     # Register API Blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(shoutouts_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(leaderboard_bp)
+    app.register_blueprint(reports_bp)
 
     @app.route("/static/avatars/<path:filename>", methods=["GET"])
     def serve_avatar(filename):

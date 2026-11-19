@@ -1,0 +1,388 @@
+"""
+Admin reports (owner: Nathan). Requirement 10. Admin only; VISIBLE posts only; no privacy thresholds.
+
+  GET /api/admin/reports/summary?from=&to=&kindness=     -> ReportSummaryDto (A4 contract)
+  GET /api/admin/reports/insights?from=&to=              -> ReportInsightsDto (new; to be added to shared/types.ts)
+  GET /api/admin/reports/export.csv?from=&to=&kindness=  -> text/csv, one row per shout-out x recipient
+
+from / to are calendar dates (YYYY-MM-DD, UTC, inclusive). Leave both out for all time.
+kindness=true limits the report or export to acts of kindness (certification evidence).
+"By team" uses each recipient's current team: the backend doesn't store their team at post time.
+"""
+import csv
+import io
+import re
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from flask import Blueprint, Response, jsonify, request
+
+from database import get_db
+from src.admin.common import employee_summary, make_error
+from src.auth.middleware import require_admin
+
+reports_bp = Blueprint("reports", __name__)
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TOP_N = 5
+WEEKDAYS = 7  # 0 = Monday ... 6 = Sunday
+
+_PEOPLE = """
+    SELECT e.*, t.team_name FROM employees e LEFT JOIN teams t ON t.team_id = e.team_id
+"""
+
+
+# ───── shared filtering ─────
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _read_range() -> Tuple[Optional[str], Optional[str], Optional[Any]]:
+    """Returns (from, to, error_response). Dates are validated and from <= to."""
+    date_from = (request.args.get("from") or "").strip() or None
+    date_to = (request.args.get("to") or "").strip() or None
+    for name, value in (("from", date_from), ("to", date_to)):
+        if value:
+            try:
+                if not _DATE.match(value):
+                    raise ValueError
+                date.fromisoformat(value)
+            except ValueError:
+                return None, None, make_error("VALIDATION_FAILED", f"'{name}' must be a date like 2026-11-19.", 400)
+    if date_from and date_to and date_from > date_to:
+        return None, None, make_error("VALIDATION_FAILED", "'from' must be on or before 'to'.", 400)
+    return date_from, date_to, None
+
+
+def _kindness_only() -> bool:
+    return (request.args.get("kindness") or "").strip().lower() in ("true", "1", "yes")
+
+
+def _post_filter(date_from: Optional[str], date_to: Optional[str], kindness: bool = False, alias: str = "s"):
+    """WHERE clause + params for VISIBLE posts in the range."""
+    where = [f"{alias}.visibility = 'VISIBLE'"]
+    params: List[Any] = []
+    if date_from:
+        where.append(f"substr({alias}.created_at, 1, 10) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append(f"substr({alias}.created_at, 1, 10) <= ?")
+        params.append(date_to)
+    if kindness:
+        where.append(f"{alias}.act_of_kindness = 1")
+    return " AND ".join(where), params
+
+
+def _effective_range(conn, date_from, date_to, where, params) -> Tuple[str, str]:
+    """The dates the report actually covers: the request, or the first post .. today."""
+    if not date_from:
+        row = conn.execute(f"SELECT min(substr(s.created_at, 1, 10)) AS d FROM shoutouts s WHERE {where}", params).fetchone()
+        date_from = row["d"] or _today().isoformat()
+    return date_from, date_to or _today().isoformat()
+
+
+def _months_between(first: str, last: str) -> List[str]:
+    """Every 'YYYY-MM' from first to last inclusive, so the trend line has no gaps."""
+    year, month = int(first[:4]), int(first[5:7])
+    end = (int(last[:4]), int(last[5:7]))
+    months = []
+    while (year, month) <= end:
+        months.append(f"{year:04d}-{month:02d}")
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+    return months
+
+
+def _share(part: int, whole: int) -> float:
+    return round(part / whole, 4) if whole else 0.0
+
+
+# ───── summary (A4 ReportSummaryDto) ─────
+
+def _summary(conn, date_from, date_to, kindness) -> Dict[str, Any]:
+    where, params = _post_filter(date_from, date_to, kindness)
+    eff_from, eff_to = _effective_range(conn, date_from, date_to, where, params)
+
+    totals = conn.execute(
+        f"SELECT COUNT(*) AS total, COALESCE(SUM(s.act_of_kindness), 0) AS kind FROM shoutouts s WHERE {where}", params
+    ).fetchone()
+
+    by_principle = conn.execute(
+        f"""SELECT p.name, COUNT(s.id) AS n
+            FROM principles p LEFT JOIN shoutouts s ON s.principle_id = p.id AND {where}
+            GROUP BY p.id HAVING n > 0 OR p.status = 'ACTIVE'
+            ORDER BY n DESC, p.display_order, p.id""",
+        params,
+    ).fetchall()
+
+    by_team = conn.execute(
+        f"""SELECT e.team_id, t.team_name, COUNT(*) AS n
+            FROM shoutouts s
+            JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+            JOIN employees e ON e.employee_id = sr.recipient_id
+            LEFT JOIN teams t ON t.team_id = e.team_id
+            WHERE {where}
+            GROUP BY e.team_id ORDER BY n DESC, t.team_name""",
+        params,
+    ).fetchall()
+
+    by_country = conn.execute(
+        f"SELECT s.country, COUNT(*) AS n FROM shoutouts s WHERE {where} GROUP BY s.country ORDER BY n DESC, s.country",
+        params,
+    ).fetchall()
+
+    month_counts = {
+        r["m"]: r["n"]
+        for r in conn.execute(
+            f"SELECT substr(s.created_at, 1, 7) AS m, COUNT(*) AS n FROM shoutouts s WHERE {where} GROUP BY m", params
+        )
+    }
+
+    return {
+        "from": eff_from,
+        "to": eff_to,
+        "total": totals["total"],
+        "actsOfKindness": totals["kind"],
+        "byPrinciple": [{"name": r["name"], "count": r["n"]} for r in by_principle],
+        "byTeam": [{"teamId": r["team_id"], "teamName": r["team_name"] or "", "count": r["n"]} for r in by_team],
+        "byCountry": [{"country": r["country"], "count": r["n"]} for r in by_country],
+        "byMonth": [{"month": m, "count": month_counts.get(m, 0)} for m in _months_between(eff_from[:7], eff_to[:7])],
+    }
+
+
+@reports_bp.route("/api/admin/reports/summary", methods=["GET"])
+@require_admin
+def report_summary():
+    date_from, date_to, error = _read_range()
+    if error:
+        return error
+    conn = get_db()
+    try:
+        return jsonify(_summary(conn, date_from, date_to, _kindness_only())), 200
+    finally:
+        conn.close()
+
+
+# ───── insights (new ReportInsightsDto) ─────
+
+def _top_people(conn, count_sql: str, params) -> List[Dict[str, Any]]:
+    rows = conn.execute(
+        f"""SELECT e.*, t.team_name, c.n FROM ({count_sql}) c
+            JOIN employees e ON e.employee_id = c.employee_id
+            LEFT JOIN teams t ON t.team_id = e.team_id
+            ORDER BY c.n DESC, e.employee_name COLLATE NOCASE, e.employee_id LIMIT ?""",
+        (*params, TOP_N),
+    ).fetchall()
+    return [{"employee": employee_summary(r), "count": r["n"]} for r in rows]
+
+
+@reports_bp.route("/api/admin/reports/insights", methods=["GET"])
+@require_admin
+def report_insights():
+    date_from, date_to, error = _read_range()
+    if error:
+        return error
+
+    conn = get_db()
+    try:
+        where, params = _post_filter(date_from, date_to)
+        eff_from, eff_to = _effective_range(conn, date_from, date_to, where, params)
+
+        posts = conn.execute(
+            f"""SELECT COUNT(*) AS total,
+                       COALESCE(SUM(s.act_of_kindness), 0) AS kind,
+                       COALESCE(SUM(s.recognition_type = 'TEAM'), 0) AS team_posts,
+                       COALESCE(SUM(s.like_count), 0) AS likes
+                FROM shoutouts s WHERE {where}""",
+            params,
+        ).fetchone()
+        total = posts["total"]
+
+        # The same number of days just before `from` (only when a start date was asked for).
+        previous = None
+        if date_from:
+            start = date.fromisoformat(eff_from)
+            days = (date.fromisoformat(eff_to) - start).days + 1
+            prev_from, prev_to = (start - timedelta(days=days)).isoformat(), (start - timedelta(days=1)).isoformat()
+            pw, pp = _post_filter(prev_from, prev_to)
+            prev_total = conn.execute(f"SELECT COUNT(*) AS n FROM shoutouts s WHERE {pw}", pp).fetchone()["n"]
+            previous = {"from": prev_from, "to": prev_to, "total": prev_total}
+
+        # Participation among active employees (status ACTIVE or SUSPENDED; INACTIVE = left).
+        active = conn.execute("SELECT COUNT(*) AS n FROM employees WHERE status != 'INACTIVE'").fetchone()["n"]
+        gave = conn.execute(
+            f"""SELECT COUNT(DISTINCT s.sender_id) AS n FROM shoutouts s
+                JOIN employees e ON e.employee_id = s.sender_id AND e.status != 'INACTIVE' WHERE {where}""",
+            params,
+        ).fetchone()["n"]
+        received = conn.execute(
+            f"""SELECT COUNT(DISTINCT sr.recipient_id) AS n FROM shoutouts s
+                JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+                JOIN employees e ON e.employee_id = sr.recipient_id AND e.status != 'INACTIVE' WHERE {where}""",
+            params,
+        ).fetchone()["n"]
+        either = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM (
+                    SELECT s.sender_id AS id FROM shoutouts s WHERE {where}
+                    UNION
+                    SELECT sr.recipient_id FROM shoutouts s JOIN shoutout_recipients sr ON sr.shoutout_id = s.id WHERE {where}
+                ) p JOIN employees e ON e.employee_id = p.id AND e.status != 'INACTIVE'""",
+            params + params,
+        ).fetchone()["n"]
+
+        # Recipient rows, and how many cross a team boundary.
+        rows = conn.execute(
+            f"""SELECT COUNT(*) AS n, COALESCE(SUM(se.team_id != re.team_id), 0) AS cross_team
+                FROM shoutouts s
+                JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+                JOIN employees se ON se.employee_id = s.sender_id
+                JOIN employees re ON re.employee_id = sr.recipient_id
+                WHERE {where}""",
+            params,
+        ).fetchone()
+        people_recognised = conn.execute(
+            f"""SELECT COUNT(DISTINCT sr.recipient_id) AS n FROM shoutouts s
+                JOIN shoutout_recipients sr ON sr.shoutout_id = s.id WHERE {where}""",
+            params,
+        ).fetchone()["n"]
+
+        most_liked = conn.execute(
+            f"""SELECT s.id, s.like_count, s.created_at, se.employee_name AS sender, p.name AS principle
+                FROM shoutouts s JOIN employees se ON se.employee_id = s.sender_id
+                JOIN principles p ON p.id = s.principle_id
+                WHERE {where} AND s.like_count > 0
+                ORDER BY s.like_count DESC, s.created_at DESC, s.id DESC LIMIT 1""",
+            params,
+        ).fetchone()
+
+        # SQLite %w: 0 = Sunday. Shift so 0 = Monday.
+        weekday_counts = [0] * WEEKDAYS
+        for r in conn.execute(
+            f"SELECT CAST(strftime('%w', substr(s.created_at, 1, 19)) AS INTEGER) AS w, COUNT(*) AS n FROM shoutouts s WHERE {where} GROUP BY w",
+            params,
+        ):
+            weekday_counts[(r["w"] + 6) % 7] = r["n"]
+
+        flows = conn.execute(
+            f"""SELECT se.team_id AS from_id, st.team_name AS from_name,
+                       re.team_id AS to_id, rt.team_name AS to_name, COUNT(*) AS n
+                FROM shoutouts s
+                JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+                JOIN employees se ON se.employee_id = s.sender_id
+                JOIN employees re ON re.employee_id = sr.recipient_id
+                LEFT JOIN teams st ON st.team_id = se.team_id
+                LEFT JOIN teams rt ON rt.team_id = re.team_id
+                WHERE {where} AND se.team_id != re.team_id
+                GROUP BY se.team_id, re.team_id
+                ORDER BY n DESC, st.team_name, rt.team_name LIMIT ?""",
+            (*params, TOP_N),
+        ).fetchall()
+
+        return jsonify({
+            "from": eff_from,
+            "to": eff_to,
+            "total": total,
+            "previousPeriod": previous,
+            "peopleRecognised": people_recognised,
+            "participation": {
+                "activeEmployees": active,
+                "gave": gave,
+                "received": received,
+                "involved": either,
+                "neverRecognised": active - received,
+                "involvedShare": _share(either, active),
+            },
+            "crossTeam": {"recipientRows": rows["n"], "crossTeamRows": rows["cross_team"],
+                          "share": _share(rows["cross_team"], rows["n"])},
+            "teamShoutouts": {"count": posts["team_posts"], "share": _share(posts["team_posts"], total)},
+            "kindness": {"count": posts["kind"], "share": _share(posts["kind"], total)},
+            "likes": {"total": posts["likes"], "averagePerPost": round(posts["likes"] / total, 2) if total else 0.0},
+            "mostLiked": {
+                "shoutoutId": most_liked["id"], "senderName": most_liked["sender"],
+                "principleName": most_liked["principle"], "likeCount": most_liked["like_count"],
+                "createdAt": most_liked["created_at"],
+            } if most_liked else None,
+            "topGivers": _top_people(
+                conn, f"SELECT s.sender_id AS employee_id, COUNT(*) AS n FROM shoutouts s WHERE {where} GROUP BY s.sender_id", params),
+            "topReceivers": _top_people(
+                conn, f"""SELECT sr.recipient_id AS employee_id, COUNT(*) AS n FROM shoutouts s
+                          JOIN shoutout_recipients sr ON sr.shoutout_id = s.id WHERE {where} GROUP BY sr.recipient_id""", params),
+            "byWeekday": [{"weekday": i, "count": weekday_counts[i]} for i in range(WEEKDAYS)],
+            "teamFlows": [
+                {"fromTeamId": f["from_id"], "fromTeamName": f["from_name"] or "",
+                 "toTeamId": f["to_id"], "toTeamName": f["to_name"] or "", "count": f["n"]}
+                for f in flows
+            ],
+        }), 200
+    finally:
+        conn.close()
+
+
+# ───── CSV export ─────
+
+CSV_COLUMNS = [
+    "shoutout_id", "created_at", "recognition_type", "sender_id", "sender_name", "sender_team",
+    "recipient_id", "recipient_name", "recipient_team", "principle", "reason", "impact",
+    "act_of_kindness", "like_count",
+]
+# B3: a value starting with = + - @ gets a leading ' so spreadsheets don't run it as a formula.
+# Tab and carriage return are guarded too (the OWASP CSV-injection list).
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_START) else text
+
+
+@reports_bp.route("/api/admin/reports/export.csv", methods=["GET"])
+@require_admin
+def report_export_csv():
+    date_from, date_to, error = _read_range()
+    if error:
+        return error
+    kindness = _kindness_only()
+
+    conn = get_db()
+    try:
+        where, params = _post_filter(date_from, date_to, kindness)
+        rows = conn.execute(
+            f"""SELECT s.id, s.created_at, s.recognition_type, s.sender_id, se.employee_name AS sender_name,
+                       st.team_name AS sender_team, sr.recipient_id, re.employee_name AS recipient_name,
+                       rt.team_name AS recipient_team, p.name AS principle, s.reason, s.impact,
+                       s.act_of_kindness, s.like_count
+                FROM shoutouts s
+                JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+                JOIN employees se ON se.employee_id = s.sender_id
+                JOIN employees re ON re.employee_id = sr.recipient_id
+                LEFT JOIN teams st ON st.team_id = se.team_id
+                LEFT JOIN teams rt ON rt.team_id = re.team_id
+                JOIN principles p ON p.id = s.principle_id
+                WHERE {where}
+                ORDER BY s.created_at, s.id, re.employee_name COLLATE NOCASE""",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = io.StringIO()
+    writer = csv.writer(out, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+    writer.writerow(CSV_COLUMNS)
+    for r in rows:
+        writer.writerow([csv_safe(v) for v in (
+            r["id"], r["created_at"], r["recognition_type"], r["sender_id"], r["sender_name"], r["sender_team"],
+            r["recipient_id"], r["recipient_name"], r["recipient_team"], r["principle"], r["reason"], r["impact"],
+            "true" if r["act_of_kindness"] else "false", r["like_count"],
+        )])
+
+    name = "ourshout-kindness" if kindness else "ourshout-shoutouts"
+    if date_from or date_to:
+        name += f"-{date_from or 'start'}-to-{date_to or _today().isoformat()}"
+    # The BOM makes Excel open the file as UTF-8, so names and quotes display correctly.
+    return Response(
+        "﻿" + out.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+    )
