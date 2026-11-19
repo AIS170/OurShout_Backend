@@ -44,6 +44,10 @@ data/*.sqlite3
 *.db
 *.sqlite3
 
+# Uploaded media
+static/avatars/*
+!static/avatars/.gitkeep
+
 # IDE / Editor
 .vscode/
 .idea/
