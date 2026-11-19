@@ -37,11 +37,17 @@ def create_employees_table():
         job_title TEXT,
         role TEXT DEFAULT 'EMPLOYEE',
         status TEXT DEFAULT 'ACTIVE',
+        avatar_url TEXT DEFAULT NULL,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (team_id) REFERENCES teams(team_id),
         FOREIGN KEY (manager_id) REFERENCES employees(employee_id)
     );
     """)
+    # Migration: add avatar_url if table was created previously without it
+    cursor.execute("PRAGMA table_info(employees);")
+    cols = [r["name"] for r in cursor.fetchall()]
+    if "avatar_url" not in cols:
+        cursor.execute("ALTER TABLE employees ADD COLUMN avatar_url TEXT DEFAULT NULL;")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_employees_team ON employees(team_id);")
     conn.commit()
     conn.close()

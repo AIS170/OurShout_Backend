@@ -1,3 +1,5 @@
+import base64
+import os
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -190,3 +192,129 @@ def get_profile_route(employee_id: str):
         return jsonify(get_profile(conn, g.user, employee_id)), 200
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- avatar uploads
+
+ALLOWED_AVATAR_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
+MAX_AVATAR_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _allowed_avatar(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_AVATAR_EXTENSIONS
+
+
+@shoutouts_bp.route("/api/profile/avatar", methods=["POST"])
+@require_auth
+def upload_avatar():
+    """
+    POST /api/profile/avatar.
+    Uploads an avatar image for the authenticated user.
+    Accepts multipart/form-data with field 'avatar' or 'file', or JSON with 'avatarBase64'.
+    """
+    employee_id = g.user["employeeId"]
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    avatars_dir = os.path.join(base_dir, "static", "avatars")
+    os.makedirs(avatars_dir, exist_ok=True)
+
+    file_bytes = None
+    ext = "jpg"
+
+    if "avatar" in request.files or "file" in request.files:
+        uploaded_file = request.files.get("avatar") or request.files.get("file")
+        if not uploaded_file or uploaded_file.filename == "":
+            return make_error("VALIDATION_FAILED", "No file selected.", 400)
+        if not _allowed_avatar(uploaded_file.filename):
+            return make_error("VALIDATION_FAILED", "Allowed formats: PNG, JPG, JPEG, WEBP, GIF.", 400)
+        ext = uploaded_file.filename.rsplit(".", 1)[1].lower()
+        file_bytes = uploaded_file.read()
+    else:
+        json_data = request.get_json(silent=True) or {}
+        base64_str = json_data.get("avatarBase64") or json_data.get("image")
+        if not base64_str:
+            return make_error("VALIDATION_FAILED", "Please provide an image file or base64 data.", 400)
+        if "," in base64_str:
+            header, base64_str = base64_str.split(",", 1)
+            if "png" in header:
+                ext = "png"
+            elif "webp" in header:
+                ext = "webp"
+            elif "gif" in header:
+                ext = "gif"
+            else:
+                ext = "jpg"
+        try:
+            file_bytes = base64.b64decode(base64_str)
+        except Exception:
+            return make_error("VALIDATION_FAILED", "Invalid base64 image data.", 400)
+
+    if not file_bytes:
+        return make_error("VALIDATION_FAILED", "Empty image payload.", 400)
+
+    if len(file_bytes) > MAX_AVATAR_BYTES:
+        return make_error("VALIDATION_FAILED", "Image exceeds maximum size of 5 MB.", 400)
+
+    # Clean previous avatars for this user
+    for existing in os.listdir(avatars_dir):
+        if existing.startswith(f"{employee_id}_") or existing.startswith(f"{employee_id}."):
+            try:
+                os.remove(os.path.join(avatars_dir, existing))
+            except Exception:
+                pass
+
+    timestamp = int(time.time())
+    new_filename = f"{employee_id}_{timestamp}.{ext}"
+    filepath = os.path.join(avatars_dir, new_filename)
+
+    with open(filepath, "wb") as f:
+        f.write(file_bytes)
+
+    avatar_url = f"/static/avatars/{new_filename}"
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE employees SET avatar_url = ?, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?",
+            (avatar_url, employee_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        "avatarUrl": avatar_url,
+        "message": "Profile picture updated successfully."
+    }), 200
+
+
+@shoutouts_bp.route("/api/profile/avatar", methods=["DELETE"])
+@require_auth
+def delete_avatar():
+    """DELETE /api/profile/avatar. Clears the user's avatar."""
+    employee_id = g.user["employeeId"]
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    avatars_dir = os.path.join(base_dir, "static", "avatars")
+
+    if os.path.exists(avatars_dir):
+        for existing in os.listdir(avatars_dir):
+            if existing.startswith(f"{employee_id}_") or existing.startswith(f"{employee_id}."):
+                try:
+                    os.remove(os.path.join(avatars_dir, existing))
+                except Exception:
+                    pass
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE employees SET avatar_url = NULL, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ?",
+            (employee_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        "avatarUrl": None,
+        "message": "Profile picture removed successfully."
+    }), 200
+

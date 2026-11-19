@@ -262,7 +262,8 @@ def run_auth_pipeline(claims: Dict[str, Any], allow_suspended: bool = False) -> 
             "country": emp["country"] or "AU",
             "role": role,
             "status": status,
-            "points": points
+            "points": points,
+            "avatarUrl": emp["avatar_url"] if "avatar_url" in emp.keys() else None
         }
 
         return True, me_dict, None, None

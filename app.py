@@ -1,19 +1,31 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from database import init_db
 from src.auth.routes import auth_bp
 from src.shoutouts.routes import shoutouts_bp
 
 def create_app():
-    app = Flask(__name__)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    static_dir = os.path.join(base_dir, "static")
+    avatars_dir = os.path.join(static_dir, "avatars")
+    os.makedirs(avatars_dir, exist_ok=True)
+
+    app = Flask(__name__, static_folder="static", static_url_path="/static")
     
-    # Configure CORS for local development
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # Configure CORS for local development and media assets
+    CORS(app, resources={
+        r"/api/*": {"origins": "*"},
+        r"/static/*": {"origins": "*"}
+    })
 
     # Register API Blueprints
     app.register_blueprint(auth_bp)
     app.register_blueprint(shoutouts_bp)
+
+    @app.route("/static/avatars/<path:filename>", methods=["GET"])
+    def serve_avatar(filename):
+        return send_from_directory(avatars_dir, filename)
 
     @app.route("/health", methods=["GET"])
     def health():

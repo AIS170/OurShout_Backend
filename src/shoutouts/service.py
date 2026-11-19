@@ -56,6 +56,7 @@ def decode_cursor(cursor: str, expected_length: int) -> List[Any]:
 # ---------------------------------------------------------------- DTOs
 
 def _employee_summary(row) -> Dict[str, Any]:
+    keys = row.keys()
     return {
         "employeeId": row["employee_id"],
         "name": row["employee_name"],
@@ -64,6 +65,9 @@ def _employee_summary(row) -> Dict[str, Any]:
         "teamId": row["team_id"],
         "teamName": row["team_name"] or "",
         "country": row["country"] or "AU",
+        "role": row["role"] if "role" in keys else "EMPLOYEE",
+        "status": row["status"] if "status" in keys else "ACTIVE",
+        "avatarUrl": row["avatar_url"] if "avatar_url" in keys else None,
     }
 
 
