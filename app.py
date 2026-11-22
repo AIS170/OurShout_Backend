@@ -7,6 +7,7 @@ from src.shoutouts.routes import shoutouts_bp
 from src.admin.routes import admin_bp
 from src.leaderboard.routes import leaderboard_bp
 from src.reports.routes import reports_bp
+from src.auctions.routes import auctions_bp
 
 def create_app():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +29,7 @@ def create_app():
     app.register_blueprint(admin_bp)
     app.register_blueprint(leaderboard_bp)
     app.register_blueprint(reports_bp)
+    app.register_blueprint(auctions_bp)
 
     @app.route("/static/avatars/<path:filename>", methods=["GET"])
     def serve_avatar(filename):

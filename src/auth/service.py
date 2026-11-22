@@ -47,6 +47,30 @@ PERSONAS: List[Dict[str, Any]] = [
         "roles": []
     },
     {
+        "personaId": "manager2",
+        "label": "Emily Watson (E0004)",
+        "description": "Sales — Sandoz tenant, manager (Priya, Ryan and Grace report to her)",
+        "expected": "OK",
+        "employeeId": "E0004",
+        "name": "Emily Watson",
+        "email": "emily.watson@sandoz.test",
+        "tid": "sandoz-mock-tenant",
+        "acct": 0,
+        "roles": []
+    },
+    {
+        "personaId": "slt",
+        "label": "Alexander Adams (E0033)",
+        "description": "Audit & Finance — Sandoz tenant, Senior Leadership Team (role SLT)",
+        "expected": "OK",
+        "employeeId": "E0033",
+        "name": "Alexander Adams",
+        "email": "alexander.adams@sandoz.test",
+        "tid": "sandoz-mock-tenant",
+        "acct": 0,
+        "roles": []
+    },
+    {
         "personaId": "admin",
         "label": "Natalie Moreau (E0039)",
         "description": "Human Resources — Sandoz tenant, Admin role",
@@ -164,7 +188,8 @@ def decode_token(token: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[s
 
 def calculate_points_for_employee(conn, employee_id: str) -> int:
     """
-    Points = 25 * (visible shout-outs sent) + 25 * (visible shout-outs received).
+    Points = 25 * (visible shout-outs sent) + 25 * (visible shout-outs received),
+    minus the points spent on auction items this person has won.
     Only counts VISIBLE posts.
     """
     try:
@@ -175,9 +200,10 @@ def calculate_points_for_employee(conn, employee_id: str) -> int:
         if not shoutouts_exist:
             return 0
 
-        # Sent visible count
+        # Sent visible count. An SLT shout-out is posted by an admin on the leadership team's
+        # behalf, so it earns the admin nothing; the people recognised still get their 25 below.
         sent_row = conn.execute(
-            "SELECT COUNT(*) as count FROM shoutouts WHERE sender_id = ? AND visibility = 'VISIBLE'",
+            "SELECT COUNT(*) as count FROM shoutouts WHERE sender_id = ? AND visibility = 'VISIBLE' AND kind != 'SLT'",
             (employee_id,)
         ).fetchone()
         sent_count = sent_row["count"] if sent_row else 0
@@ -191,9 +217,17 @@ def calculate_points_for_employee(conn, employee_id: str) -> int:
         """, (employee_id,)).fetchone()
         rec_count = rec_row["count"] if rec_row else 0
 
-        return (sent_count * 25) + (rec_count * 25)
+        earned = (sent_count * 25) + (rec_count * 25)
     except Exception:
         return 0
+
+    # Winning an auction spends points. Kept apart from the count above so a database without
+    # the auction tables still shows the points people earned.
+    try:
+        from src.auctions.service import points_spent  # imported here: that module imports this one
+        return max(0, earned - points_spent(conn, employee_id))
+    except Exception:
+        return earned
 
 def record_login_rejected_audit(conn, actor_id: str, target_id: str, reason_code: str):
     """Logs LOGIN_REJECTED audit row if audit_events table exists."""
@@ -252,6 +286,16 @@ def run_auth_pipeline(claims: Dict[str, Any], allow_suspended: bool = False) -> 
 
         points = calculate_points_for_employee(conn, oid)
 
+        # Who may open Reports: admins and the Senior Leadership Team see everything ("ALL");
+        # anyone with people reporting to them sees their own team ("TEAM"); others don't (None).
+        if role in ("ADMIN", "SLT"):
+            reports_access = "ALL"
+        else:
+            has_reports = conn.execute(
+                "SELECT 1 FROM employees WHERE manager_id = ? AND status != 'INACTIVE' LIMIT 1", (oid,)
+            ).fetchone()
+            reports_access = "TEAM" if has_reports else None
+
         me_dict = {
             "employeeId": emp["employee_id"],
             "name": emp["employee_name"],
@@ -263,7 +307,8 @@ def run_auth_pipeline(claims: Dict[str, Any], allow_suspended: bool = False) -> 
             "role": role,
             "status": status,
             "points": points,
-            "avatarUrl": emp["avatar_url"] if "avatar_url" in emp.keys() else None
+            "avatarUrl": emp["avatar_url"] if "avatar_url" in emp.keys() else None,
+            "reportsAccess": reports_access
         }
 
         return True, me_dict, None, None

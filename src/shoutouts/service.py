@@ -127,6 +127,8 @@ def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
             "visibility": row["visibility"],
             "createdAt": row["created_at"],
             "editedAt": row["edited_at"],
+            # SLT = posted by an admin on the Senior Leadership Team's behalf; the feed shows it in gold.
+            "kind": row["kind"] or "STANDARD",
         })
     return dtos
 
@@ -431,9 +433,14 @@ MIN_TEAM_RECIPIENTS = 2
 MAX_TEAM_RECIPIENTS = 50
 
 
-def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
+SHOUTOUT_KINDS = ("STANDARD", "SLT")
+
+
+def create_shoutout(conn, viewer: Dict[str, Any], body: Any, kind: str = "STANDARD") -> Dict[str, Any]:
     """
-    POST /api/shoutouts. Checks run in the order the build plan sets out:
+    POST /api/shoutouts (kind STANDARD), and POST /api/admin/slt-shoutouts (kind SLT: an admin
+    posting on the Senior Leadership Team's behalf; the same checks apply).
+    Checks run in the order the build plan sets out:
     1. shape of the request        -> VALIDATION_FAILED
     2. sender among the recipients -> SELF_SHOUTOUT
     3. every recipient is active   -> RECIPIENT_NOT_ACTIVE
@@ -446,6 +453,8 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
     """
     if not isinstance(body, dict):
         raise ShoutoutError("VALIDATION_FAILED", "Request body must be a JSON object.", 400)
+    if kind not in SHOUTOUT_KINDS:
+        raise ValueError(f"Unknown shout-out kind: {kind}")
 
     # 1. Shape
     recognition_type = body.get("recognitionType")
@@ -525,11 +534,11 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
     try:
         cursor = conn.execute("""
             INSERT INTO shoutouts (sender_id, recognition_type, target_team_id, principle_id, reason, impact,
-                                   act_of_kindness, country, visibility, like_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE', 0, ?)
+                                   act_of_kindness, country, visibility, like_count, created_at, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE', 0, ?, ?)
         """, (
             viewer["employeeId"], recognition_type, target_team_id, principle_id, reason, impact,
-            1 if act_of_kindness else 0, viewer["country"], utc_now_iso(),
+            1 if act_of_kindness else 0, viewer["country"], utc_now_iso(), kind,
         ))
         shoutout_id = cursor.lastrowid
         conn.executemany(
@@ -538,7 +547,7 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any) -> Dict[str, Any]:
         )
         _record_audit(
             conn, viewer["employeeId"], "SHOUTOUT_CREATED", shoutout_id, {},
-            {"recipientIds": recipient_ids, "principleId": principle_id},
+            {"recipientIds": recipient_ids, "principleId": principle_id, "kind": kind},
         )
         conn.commit()
     except Exception:
@@ -572,7 +581,12 @@ def get_profile(conn, viewer: Dict[str, Any], employee_id: str) -> Dict[str, Any
         JOIN shoutouts s ON s.id = sr.shoutout_id
         WHERE sr.recipient_id = ? AND s.visibility = 'VISIBLE' AND s.country = ?
     """
-    given = "FROM shoutouts s WHERE s.sender_id = ? AND s.visibility = 'VISIBLE' AND s.country = ?"
+    # An SLT shout-out is posted by an admin on the leadership team's behalf, so it isn't one
+    # that admin "gave": it stays out of their given numbers and out of top recommender.
+    given = (
+        "FROM shoutouts s WHERE s.sender_id = ? AND s.visibility = 'VISIBLE' AND s.country = ?"
+        " AND s.kind != 'SLT'"
+    )
     args = (employee_id, viewer["country"])
 
     counts = conn.execute(
@@ -594,7 +608,7 @@ def get_profile(conn, viewer: Dict[str, Any], employee_id: str) -> Dict[str, Any
 
     recommender = conn.execute(f"""
         SELECT s.sender_id, COUNT(*) AS total, MAX(s.created_at) AS latest
-        {received}
+        {received} AND s.kind != 'SLT'
         GROUP BY s.sender_id ORDER BY total DESC, latest DESC LIMIT 1
     """, args).fetchone()
     top_recommender = None

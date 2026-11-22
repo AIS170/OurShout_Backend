@@ -47,6 +47,8 @@ data/*.sqlite3
 # Uploaded media
 static/avatars/*
 !static/avatars/.gitkeep
+static/auctions/*
+!static/auctions/.gitkeep
 
 # IDE / Editor
 .vscode/

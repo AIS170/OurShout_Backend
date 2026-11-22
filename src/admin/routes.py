@@ -1,10 +1,12 @@
 """
 Admin routes (owner: Nathan). Every route here is admin-only.
 
-  GET   /api/admin/users?q=                  -> AdminUserDto[]
+  GET   /api/admin/users?q=&from=&to=        -> AdminUserDto[] + givenCount, receivedCount for the range
+  GET   /api/admin/users/:employeeId?from=&to=  -> the same row + points
   PATCH /api/admin/users/:employeeId         { status: ACTIVE | SUSPENDED } -> AdminUserDto
   GET   /api/admin/audit?action=&actorId=&from=&to=&cursor=&limit=  -> Page<AuditEventDto>, read-only
-  GET   /api/admin/shoutouts?visibility=&q=&between=&month=&cursor=&limit=  -> Page<ShoutoutDto>, every visibility
+  GET   /api/admin/shoutouts?visibility=&q=&between=&month=&employeeId=&kind=&cursor=&limit=  -> Page<ShoutoutDto>, every visibility
+  POST  /api/admin/slt-shoutouts             CreateShoutoutRequest -> 201 ShoutoutDto with kind SLT
   GET   /api/admin/shoutouts/:id             -> ShoutoutDto, any visibility
   PATCH /api/admin/shoutouts/:id             { visibility } -> ShoutoutDto (HIDDEN <-> VISIBLE; DELETED is final)
   GET   /api/admin/alerts/reciprocal?month=YYYY-MM                  -> ReciprocalAlertDto[]
@@ -31,15 +33,20 @@ from src.admin.common import (
     admin_user_dto,
     employee_summary,
     make_error,
+    post_filter,
+    read_date_range,
     read_json_object,
     record_audit,
 )
 from src.auth.middleware import require_admin
+from src.auth.service import calculate_points_for_employee
 # Reuse the feed's ShoutoutDto builder so admin and feed cards have exactly the same shape.
 from src.shoutouts.service import (
+    SHOUTOUT_KINDS,
     ShoutoutError,
     _SHOUTOUT_SELECT,
     _build_dtos,
+    create_shoutout,
     decode_cursor,
     encode_cursor,
 )
@@ -62,16 +69,51 @@ def _like(q: str) -> str:
     return f"%{escaped}%"
 
 
+def _user_stats_select(date_from, date_to):
+    """
+    _USER_SELECT plus given_count (posts sent) and received_count (posts received) in the
+    date range. VISIBLE posts only, the same rule as points and reports. SLT shout-outs don't
+    count as given by the admin who posted them.
+    """
+    where, params = post_filter(date_from, date_to)
+    sql = f"""
+        SELECT e.*, t.team_name,
+               COALESCE(gv.n, 0) AS given_count,
+               COALESCE(rc.n, 0) AS received_count
+        FROM employees e
+        LEFT JOIN teams t ON e.team_id = t.team_id
+        LEFT JOIN (
+            SELECT s.sender_id AS id, COUNT(*) AS n FROM shoutouts s
+            WHERE {where} AND s.kind != 'SLT' GROUP BY s.sender_id
+        ) gv ON gv.id = e.employee_id
+        LEFT JOIN (
+            SELECT sr.recipient_id AS id, COUNT(*) AS n
+            FROM shoutout_recipients sr JOIN shoutouts s ON s.id = sr.shoutout_id
+            WHERE {where} GROUP BY sr.recipient_id
+        ) rc ON rc.id = e.employee_id
+    """
+    return sql, params + params
+
+
+def _user_stats_dto(row):
+    """AdminUserDto plus the shout-out counts for the requested period."""
+    return {**admin_user_dto(row), "givenCount": row["given_count"], "receivedCount": row["received_count"]}
+
+
 @admin_bp.route("/api/admin/users", methods=["GET"])
 @require_admin
 def list_users():
     q = (request.args.get("q") or "").strip()
+    date_from, date_to, error = read_date_range()
+    if error:
+        return error
+    select, params = _user_stats_select(date_from, date_to)
     conn = get_db()
     try:
         if q:
             pattern = _like(q)
             rows = conn.execute(
-                _USER_SELECT + """
+                select + """
                 WHERE lower(e.employee_name) LIKE ? ESCAPE '\\'
                    OR lower(e.email_id) LIKE ? ESCAPE '\\'
                    OR lower(coalesce(e.job_title, '')) LIKE ? ESCAPE '\\'
@@ -79,14 +121,32 @@ def list_users():
                 ORDER BY e.employee_name COLLATE NOCASE, e.employee_id
                 LIMIT ?
                 """,
-                (pattern, pattern, pattern, pattern, MAX_USERS),
+                (*params, pattern, pattern, pattern, pattern, MAX_USERS),
             ).fetchall()
         else:
             rows = conn.execute(
-                _USER_SELECT + " ORDER BY e.employee_name COLLATE NOCASE, e.employee_id LIMIT ?",
-                (MAX_USERS,),
+                select + " ORDER BY e.employee_name COLLATE NOCASE, e.employee_id LIMIT ?",
+                (*params, MAX_USERS),
             ).fetchall()
-        return jsonify([admin_user_dto(r) for r in rows]), 200
+        return jsonify([_user_stats_dto(r) for r in rows]), 200
+    finally:
+        conn.close()
+
+
+@admin_bp.route("/api/admin/users/<employee_id>", methods=["GET"])
+@require_admin
+def get_user(employee_id: str):
+    """One person for the admin user page: the list row plus their points."""
+    date_from, date_to, error = read_date_range()
+    if error:
+        return error
+    select, params = _user_stats_select(date_from, date_to)
+    conn = get_db()
+    try:
+        row = conn.execute(select + " WHERE e.employee_id = ?", (*params, employee_id)).fetchone()
+        if not row:
+            return make_error("NOT_FOUND", f"Employee {employee_id} not found.", 404)
+        return jsonify({**_user_stats_dto(row), "points": calculate_points_for_employee(conn, employee_id)}), 200
     finally:
         conn.close()
 
@@ -317,6 +377,23 @@ def list_admin_shoutouts():
         where.append("substr(s.created_at, 1, 7) = ?")
         params.append(month)
 
+    # kind=SLT: only shout-outs posted on the Senior Leadership Team's behalf.
+    kind = (request.args.get("kind") or "").strip().upper()
+    if kind:
+        if kind not in SHOUTOUT_KINDS:
+            return make_error("VALIDATION_FAILED", "'kind' must be STANDARD or SLT.", 400)
+        where.append("s.kind = ?")
+        params.append(kind)
+
+    # employeeId=E0005: every post that person sent or received (the admin user page).
+    employee_id = (request.args.get("employeeId") or "").strip()
+    if employee_id:
+        where.append(
+            "(s.sender_id = ? OR EXISTS (SELECT 1 FROM shoutout_recipients x"
+            " WHERE x.shoutout_id = s.id AND x.recipient_id = ?))"
+        )
+        params.extend([employee_id, employee_id])
+
     conn = get_db()
     try:
         if cursor:
@@ -335,6 +412,24 @@ def list_admin_shoutouts():
         page = rows[:limit]
         next_cursor = encode_cursor([page[-1]["created_at"], page[-1]["id"]]) if len(rows) > limit else None
         return jsonify({"items": _build_dtos(conn, page, g.user["employeeId"]), "nextCursor": next_cursor}), 200
+    finally:
+        conn.close()
+
+
+@admin_bp.route("/api/admin/slt-shoutouts", methods=["POST"])
+@require_admin
+def create_slt_shoutout():
+    """
+    An SLT shout-out: the admin posts it on the Senior Leadership Team's behalf, and the feed
+    shows it in gold as from the leadership team. Same body and checks as POST /api/shoutouts.
+    The people recognised get their usual points; the admin gets none for posting it.
+    """
+    conn = get_db()
+    try:
+        created = create_shoutout(conn, g.user, request.get_json(silent=True), kind="SLT")
+        return jsonify(created), 201
+    except ShoutoutError as e:
+        return make_error(e.code, e.message, e.status_code)
     finally:
         conn.close()
 
@@ -412,7 +507,7 @@ def reciprocal_alerts():
             WITH directed AS (
                 SELECT s.sender_id AS a, sr.recipient_id AS b, COUNT(*) AS n
                 FROM shoutouts s JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
-                WHERE s.visibility = 'VISIBLE' AND substr(s.created_at, 1, 7) = ?
+                WHERE s.visibility = 'VISIBLE' AND s.kind != 'SLT' AND substr(s.created_at, 1, 7) = ?
                 GROUP BY s.sender_id, sr.recipient_id
             )
             SELECT x.a, x.b, x.n AS a_to_b, y.n AS b_to_a, min(x.n, y.n) AS times
