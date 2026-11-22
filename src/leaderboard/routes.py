@@ -5,7 +5,7 @@ Leaderboards (owner: Nathan). Any signed-in user.
 
 Two top-3 boards for the caller's country:
   mostShoutedOut      recipient rows: a team shout-out counts once for each person on it
-  mostShoutOutsGiven  posts sent: a team shout-out counts once for its sender
+  mostShoutOutsGiven  posts sent: a team shout-out counts once for its sender (SLT shout-outs don't count)
 Only VISIBLE posts count, so hidden or deleted posts drop out. Ties are broken by name.
 "month" is the current calendar month in UTC.
 """
@@ -64,8 +64,9 @@ def get_leaderboard():
         )
         given = _board(
             conn,
+            # SLT shout-outs are posted by an admin on the leadership team's behalf: not "given" by them.
             f"""SELECT s.sender_id AS employee_id, COUNT(*) AS n
-                FROM shoutouts s WHERE {where} GROUP BY s.sender_id""",
+                FROM shoutouts s WHERE {where} AND s.kind != 'SLT' GROUP BY s.sender_id""",
             params,
         )
         return jsonify({

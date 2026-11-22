@@ -32,11 +32,15 @@ PRINCIPLES_DATA = [
 ]
 
 # 55 AU Employees: (employee_id, employee_name, email_id, team_id, manager_id, country, job_title, role, status)
+# role values: 'EMPLOYEE' | 'SLT' | 'ADMIN'. SLT = Senior Leadership Team: the Country President and the
+#   directors and heads who report to him. They see the same Reports page as an admin.
+#   A manager is not a role: it is anyone with people reporting to them (manager_id), and they
+#   get a Reports page for their own team.
 # status values: 'ACTIVE' | 'SUSPENDED' | 'INACTIVE'
 EMPLOYEES_DATA = [
     # T02: Commercial & General Management
-    ("E0001", "Marcus Vance", "marcus.vance@sandoz.test", "T02", None, "AU", "Country President - Australia & New Zealand", "EMPLOYEE", "ACTIVE"),
-    ("E0002", "Chloe Bennett", "chloe.bennett@sandoz.test", "T02", "E0001", "AU", "Commercial Operations Director", "EMPLOYEE", "ACTIVE"),
+    ("E0001", "Marcus Vance", "marcus.vance@sandoz.test", "T02", None, "AU", "Country President - Australia & New Zealand", "SLT", "ACTIVE"),
+    ("E0002", "Chloe Bennett", "chloe.bennett@sandoz.test", "T02", "E0001", "AU", "Commercial Operations Director", "SLT", "ACTIVE"),
     ("E0011", "Olivia Chen", "olivia.chen@sandoz.test", "T02", "E0002", "AU", "Head of Commercial & Biosimilars", "EMPLOYEE", "ACTIVE"),
     ("E0015", "Lucas Martin", "lucas.martin@sandoz.test", "T02", "E0011", "AU", "Commercial Strategy Lead", "EMPLOYEE", "ACTIVE"),
 
@@ -60,7 +64,7 @@ EMPLOYEES_DATA = [
     ("E0020", "Thomas Harris", "thomas.harris@sandoz.test", "T10", "E0010", "AU", "Strategic Sourcing Analyst", "EMPLOYEE", "ACTIVE"),
 
     # T14: Technical Operations
-    ("E0017", "Oliver Smith", "oliver.smith@sandoz.test", "T14", "E0001", "AU", "Head of Technical Operations", "EMPLOYEE", "ACTIVE"),
+    ("E0017", "Oliver Smith", "oliver.smith@sandoz.test", "T14", "E0001", "AU", "Head of Technical Operations", "SLT", "ACTIVE"),
     ("E0018", "Arjun Patel", "arjun.patel@sandoz.test", "T14", "E0017", "AU", "Logistics & Warehouse Coordinator", "EMPLOYEE", "ACTIVE"),
     ("E0028", "Daniel Green", "daniel.green@sandoz.test", "T14", "E0017", "AU", "Technical Operations Analyst", "EMPLOYEE", "ACTIVE"),
     ("E0029", "Oliver Grant", "oliver.grant@sandoz.test", "T14", "E0017", "AU", "Supply Chain & Operations Planner", "EMPLOYEE", "SUSPENDED"),
@@ -71,12 +75,12 @@ EMPLOYEES_DATA = [
 
     # T07: Legal & Intellictual Property & Compliance
     ("E0021", "Sarah Nguyen", "sarah.nguyen.legal@sandoz.test", "T07", "E0022", "AU", "Compliance & IP Specialist", "EMPLOYEE", "ACTIVE"),
-    ("E0022", "James Wilson", "james.wilson@sandoz.test", "T07", "E0001", "AU", "Head of Legal, IP & Compliance", "EMPLOYEE", "ACTIVE"),
+    ("E0022", "James Wilson", "james.wilson@sandoz.test", "T07", "E0001", "AU", "Head of Legal, IP & Compliance", "SLT", "ACTIVE"),
     ("E0023", "Emma Roberts", "emma.roberts@sandoz.test", "T07", "E0022", "AU", "Legal Counsel", "EMPLOYEE", "ACTIVE"),
     ("E0054", "Victoria Simmons", "victoria.simmons@sandoz.test", "T07", "E0022", "AU", "Compliance Operations Associate", "EMPLOYEE", "ACTIVE"),
 
     # T12: RND
-    ("E0024", "William Turner", "william.turner@sandoz.test", "T12", "E0001", "AU", "R&D Operations Director", "EMPLOYEE", "ACTIVE"),
+    ("E0024", "William Turner", "william.turner@sandoz.test", "T12", "E0001", "AU", "R&D Operations Director", "SLT", "ACTIVE"),
     ("E0025", "Charlotte White", "charlotte.white@sandoz.test", "T12", "E0024", "AU", "Senior Clinical Research Scientist", "EMPLOYEE", "ACTIVE"),
     ("E0027", "Amelia King", "amelia.king@sandoz.test", "T12", "E0024", "AU", "Medical Science Researcher", "EMPLOYEE", "ACTIVE"),
     ("E0031", "Henry Hall", "henry.hall@sandoz.test", "T12", "E0024", "AU", "Clinical Trial Coordinator", "EMPLOYEE", "ACTIVE"),
@@ -87,7 +91,7 @@ EMPLOYEES_DATA = [
     ("E0052", "Hannah Russell", "hannah.russell@sandoz.test", "T03", "E0026", "AU", "Public Affairs Partner", "EMPLOYEE", "ACTIVE"),
 
     # T01: Audit & Finance
-    ("E0033", "Alexander Adams", "alexander.adams@sandoz.test", "T01", "E0001", "AU", "Head of Audit & Finance", "EMPLOYEE", "ACTIVE"),
+    ("E0033", "Alexander Adams", "alexander.adams@sandoz.test", "T01", "E0001", "AU", "Head of Audit & Finance", "SLT", "ACTIVE"),
     ("E0034", "Sophia Campbell", "sophia.campbell@sandoz.test", "T01", "E0033", "AU", "Senior Financial Analyst", "EMPLOYEE", "ACTIVE"),
     ("E0035", "Mason Phillips", "mason.phillips@sandoz.test", "T01", "E0033", "AU", "Senior Internal Auditor", "EMPLOYEE", "ACTIVE"),
     ("E0036", "Daniel Taylor", "daniel.taylor@sandoz.test", "T01", "E0033", "AU", "Former Finance Associate", "EMPLOYEE", "INACTIVE"),
@@ -111,7 +115,7 @@ EMPLOYEES_DATA = [
     ("E0047", "Jackson Ross", "jackson.ross@sandoz.test", "T15", "E0044", "AU", "Digital Solutions Architect", "EMPLOYEE", "ACTIVE"),
 
     # T09: Marketing
-    ("E0048", "Evelyn Powell", "evelyn.powell@sandoz.test", "T09", "E0001", "AU", "Marketing Director", "EMPLOYEE", "ACTIVE"),
+    ("E0048", "Evelyn Powell", "evelyn.powell@sandoz.test", "T09", "E0001", "AU", "Marketing Director", "SLT", "ACTIVE"),
     ("E0049", "Aiden Jenkins", "aiden.jenkins@sandoz.test", "T09", "E0048", "AU", "Brand Strategy Lead", "EMPLOYEE", "ACTIVE"),
     ("E0050", "Lily Perry", "lily.perry@sandoz.test", "T09", "E0048", "AU", "Product Marketing Specialist", "EMPLOYEE", "ACTIVE"),
     ("E0051", "Matthew Butler", "matthew.butler@sandoz.test", "T09", "E0048", "AU", "Digital Marketing Specialist", "EMPLOYEE", "ACTIVE"),
@@ -124,6 +128,12 @@ EMPLOYEES_DATA = [
 # feed always looks recent. Use either "to" (hand-picked people) or "team" (every active member
 # of that team except the sender). "liked_by" lists the employees who liked the post.
 SHOUTOUTS_DATA = [
+    # An SLT shout-out: posted by the admin (Natalie) on the Senior Leadership Team's behalf.
+    # The feed shows it in gold, as from the leadership team.
+    {"from": "E0039", "to": ["E0025"], "principle": 1, "kindness": False, "days_ago": 0.2, "kind": "SLT",
+     "reason": "Charlotte brought R&D, Regulatory and Supply together to get the biosimilar submission in three weeks early.",
+     "impact": "Patients will have access to the treatment a full quarter sooner than planned.",
+     "liked_by": ["E0001", "E0024", "E0027", "E0031", "E0005"]},
     {"from": "E0013", "to": ["E0005"], "principle": 5, "kindness": True, "days_ago": 0.4,
      "reason": "Priya spent her lunch break walking me through the new pharmacy ordering portal.",
      "impact": "I can now answer my customers' questions myself instead of escalating them.",
@@ -182,6 +192,32 @@ SHOUTOUTS_DATA = [
      "liked_by": ["E0048", "E0049", "E0003", "E0004", "E0013"]},
 ]
 
+# Demo auction items, timed from the moment of seeding. No bids are seeded, so nobody's points
+# are held or spent until someone bids.
+#   opens_in_days / closes_in_days: negative = already happened.
+AUCTION_ITEMS_DATA = [
+    {"name": "Sandoz hoodie", "description": "A navy Sandoz hoodie in your size.",
+     "starting_bid": 50, "opens_in_days": -1, "closes_in_days": 3},
+    {"name": "Team lunch voucher", "description": "Lunch for you and five teammates at a place of your choice.",
+     "starting_bid": 100, "opens_in_days": 2, "closes_in_days": 7},
+]
+
+def seed_auction_items(cursor):
+    """Loads the demo auction items: one open for bids now, one coming soon. Listed by Natalie (E0039)."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def iso(moment):
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    cursor.executemany("""
+        INSERT INTO auction_items (name, description, starting_bid, starts_at, ends_at, country, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, 'AU', 'E0039', ?)
+    """, [
+        (item["name"], item["description"], item["starting_bid"],
+         iso(now + timedelta(days=item["opens_in_days"])), iso(now + timedelta(days=item["closes_in_days"])), iso(now))
+        for item in AUCTION_ITEMS_DATA
+    ])
+
 def seed_shoutouts(cursor):
     """Loads the demo shout-outs, their recipients and their likes."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -208,11 +244,12 @@ def seed_shoutouts(cursor):
 
         cursor.execute("""
             INSERT INTO shoutouts (sender_id, recognition_type, target_team_id, principle_id, reason, impact,
-                                   act_of_kindness, country, visibility, like_count, created_at, edited_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'AU', 'VISIBLE', ?, ?, ?)
+                                   act_of_kindness, country, visibility, like_count, created_at, edited_at, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'AU', 'VISIBLE', ?, ?, ?, ?)
         """, (
             sender, "TEAM" if len(recipients) > 1 else "INDIVIDUAL", team_id, post["principle"],
-            post["reason"], post["impact"], 1 if post["kindness"] else 0, len(liked_by), iso(created), edited
+            post["reason"], post["impact"], 1 if post["kindness"] else 0, len(liked_by), iso(created), edited,
+            post.get("kind", "STANDARD")
         ))
         shoutout_id = cursor.lastrowid
 
@@ -230,6 +267,8 @@ def seed_database():
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = OFF;")
 
+    cursor.execute("DROP TABLE IF EXISTS auction_bids;")
+    cursor.execute("DROP TABLE IF EXISTS auction_items;")
     cursor.execute("DROP TABLE IF EXISTS likes;")
     cursor.execute("DROP TABLE IF EXISTS shoutout_recipients;")
     cursor.execute("DROP TABLE IF EXISTS shoutouts;")
@@ -262,6 +301,9 @@ def seed_database():
 
     print(f"🌱 Seeding {len(SHOUTOUTS_DATA)} demo shout-outs with recipients and likes...")
     seed_shoutouts(cursor)
+
+    print(f"🌱 Seeding {len(AUCTION_ITEMS_DATA)} demo auction items (one open for bids, one coming soon)...")
+    seed_auction_items(cursor)
 
     cursor.execute("PRAGMA foreign_keys = ON;")
     conn.commit()

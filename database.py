@@ -86,11 +86,17 @@ def create_shoutouts_tables():
         like_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         edited_at TEXT,
+        kind TEXT NOT NULL DEFAULT 'STANDARD',
         FOREIGN KEY (sender_id) REFERENCES employees(employee_id),
         FOREIGN KEY (target_team_id) REFERENCES teams(team_id),
         FOREIGN KEY (principle_id) REFERENCES principles(id)
     );
     """)
+    # kind: STANDARD, or SLT for a shout-out an admin posts on the Senior Leadership Team's behalf.
+    # Migration: add it if the table was created previously without it.
+    cursor.execute("PRAGMA table_info(shoutouts);")
+    if "kind" not in [r["name"] for r in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE shoutouts ADD COLUMN kind TEXT NOT NULL DEFAULT 'STANDARD';")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS shoutout_recipients (
         shoutout_id INTEGER NOT NULL,
@@ -122,11 +128,52 @@ def create_shoutouts_tables():
     conn.commit()
     conn.close()
 
+def create_auction_tables():
+    """
+    Auction items and the bids on them (points are spent here).
+    An item's state comes from the clock: upcoming before starts_at, live until ends_at, then ended.
+    Its highest bid leads; once the item has ended, that bid is what the winner spent.
+    Timestamps are UTC ISO strings like the shout-outs', so they compare as text.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS auction_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        image_url TEXT,
+        starting_bid INTEGER NOT NULL,
+        starts_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        country TEXT NOT NULL DEFAULT 'AU',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (created_by) REFERENCES employees(employee_id)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS auction_bids (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        bidder_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (item_id) REFERENCES auction_items(id),
+        FOREIGN KEY (bidder_id) REFERENCES employees(employee_id)
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_auction_bids_item ON auction_bids(item_id, amount DESC, id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_auction_bids_bidder ON auction_bids(bidder_id);")
+    conn.commit()
+    conn.close()
+
 def init_db():
     create_teams_table()
     create_employees_table()
     create_principles_table()
     create_shoutouts_tables()
+    create_auction_tables()
 
 if __name__ == "__main__":
     init_db()
