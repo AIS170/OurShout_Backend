@@ -139,6 +139,25 @@ def build_dtos(conn, rows, viewer_id: str, now: str) -> List[Dict[str, Any]]:
             [r["id"] for r in rows],
         ).fetchall()
     }
+
+    # Load recent bid history for items
+    recent_bids_map: Dict[int, List[Dict[str, Any]]] = {}
+    for b in conn.execute(
+        f"""SELECT b.id, b.item_id, b.amount, b.created_at, e.*, t.team_name
+            FROM auction_bids b
+            JOIN employees e ON e.employee_id = b.bidder_id
+            LEFT JOIN teams t ON t.team_id = e.team_id
+            WHERE b.item_id IN ({marks})
+            ORDER BY b.amount DESC, b.id DESC""",
+        [r["id"] for r in rows],
+    ).fetchall():
+        recent_bids_map.setdefault(b["item_id"], []).append({
+            "id": b["id"],
+            "amount": b["amount"],
+            "createdAt": b["created_at"],
+            "bidder": _bidder(b),
+        })
+
     items = []
     for row in rows:
         lead = top.get(row["id"])
@@ -154,6 +173,7 @@ def build_dtos(conn, rows, viewer_id: str, now: str) -> List[Dict[str, Any]]:
             "currentBid": lead["amount"] if lead else None,
             "currentBidder": _bidder(lead) if lead else None,
             "bidCount": lead["bid_count"] if lead else 0,
+            "recentBids": recent_bids_map.get(row["id"], [])[:5],
             "minNextBid": lead["amount"] + 1 if lead else row["starting_bid"],
             "leadingIsMe": bool(lead) and lead["bidder_id"] == viewer_id,
         })
