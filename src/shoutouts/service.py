@@ -185,6 +185,7 @@ def list_feed(
     sort: str = "newest",
     principle_id: Optional[int] = None,
     team_id: Optional[str] = None,
+    kind: Optional[str] = None,
     cursor: Optional[str] = None,
     limit: int = DEFAULT_PAGE_SIZE,
 ) -> Dict[str, Any]:
@@ -212,6 +213,10 @@ def list_feed(
             WHERE sr.shoutout_id = s.id AND re.team_id = ?
         )""")
         params.append(team_id)
+
+    if kind:
+        where.append("s.kind = ?")
+        params.append(kind)
 
     if sort == "most_liked":
         order_by = "s.like_count DESC, s.created_at DESC, s.id DESC"

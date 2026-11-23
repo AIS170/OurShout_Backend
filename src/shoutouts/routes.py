@@ -59,6 +59,7 @@ def get_feed():
             sort=request.args.get("sort", "newest"),
             principle_id=_int_arg("principleId"),
             team_id=request.args.get("teamId") or None,
+            kind=request.args.get("kind") or None,
             cursor=request.args.get("cursor") or None,
             limit=_int_arg("limit", DEFAULT_PAGE_SIZE),
         )
