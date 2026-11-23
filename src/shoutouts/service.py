@@ -143,6 +143,7 @@ def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
             "editedAt": row["edited_at"],
             # SLT = posted by an admin on the Senior Leadership Team's behalf; the feed shows it in gold.
             "kind": row["kind"] or "STANDARD",
+            "scheduledFor": row["scheduled_for"] if "scheduled_for" in row.keys() else None,
         })
     return dtos
 
@@ -200,6 +201,10 @@ def list_feed(
 
     where = ["s.visibility = 'VISIBLE'", "s.country = ?"]
     params: List[Any] = [viewer["country"]]
+
+    # Scheduled posts only appear once their scheduled time has arrived
+    where.append("(s.scheduled_for IS NULL OR s.scheduled_for <= ?)")
+    params.append(utc_now_iso())
 
     if principle_id is not None:
         where.append("s.principle_id = ?")
@@ -605,6 +610,17 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any, kind: str = "STANDA
     if target_team_id is not None and (not isinstance(target_team_id, str) or recognition_type != "TEAM"):
         raise ShoutoutError("VALIDATION_FAILED", "'targetTeamId' is only for team shout-outs.", 400)
 
+    scheduled_for = body.get("scheduledFor")
+    if scheduled_for is not None:
+        if not isinstance(scheduled_for, str) or not scheduled_for.strip():
+            scheduled_for = None
+        else:
+            scheduled_for = scheduled_for.strip()
+            try:
+                datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
+            except Exception:
+                raise ShoutoutError("VALIDATION_FAILED", "'scheduledFor' must be a valid ISO 8601 date string.", 400)
+
     # 2. No recognising yourself
     if viewer["employeeId"] in recipient_ids:
         raise ShoutoutError("SELF_SHOUTOUT", "You can't give a shout-out to yourself.", 400)
@@ -649,11 +665,11 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any, kind: str = "STANDA
     try:
         cursor = conn.execute("""
             INSERT INTO shoutouts (sender_id, recognition_type, target_team_id, principle_id, reason, impact,
-                                   act_of_kindness, country, visibility, like_count, created_at, kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE', 0, ?, ?)
+                                   act_of_kindness, country, visibility, like_count, created_at, kind, scheduled_for)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE', 0, ?, ?, ?)
         """, (
             viewer["employeeId"], recognition_type, target_team_id, principle_id, reason, impact,
-            1 if act_of_kindness else 0, viewer["country"], utc_now_iso(), kind,
+            1 if act_of_kindness else 0, viewer["country"], utc_now_iso(), kind, scheduled_for,
         ))
         shoutout_id = cursor.lastrowid
         conn.executemany(
@@ -662,7 +678,7 @@ def create_shoutout(conn, viewer: Dict[str, Any], body: Any, kind: str = "STANDA
         )
         _record_audit(
             conn, viewer["employeeId"], "SHOUTOUT_CREATED", shoutout_id, {},
-            {"recipientIds": recipient_ids, "principleId": principle_id, "kind": kind},
+            {"recipientIds": recipient_ids, "principleId": principle_id, "kind": kind, "scheduledFor": scheduled_for},
         )
         conn.commit()
     except Exception:

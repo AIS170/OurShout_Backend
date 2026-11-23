@@ -90,8 +90,9 @@ def get_leaderboard():
         return make_error("VALIDATION_FAILED", "'period' must be 'month' or 'all'.", 400)
 
     month = datetime.now(timezone.utc).strftime("%Y-%m") if period == "month" else None
-    where = "s.visibility = 'VISIBLE' AND s.country = ?"
-    params = [g.user["country"]]
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    where = "s.visibility = 'VISIBLE' AND s.country = ? AND (s.scheduled_for IS NULL OR s.scheduled_for <= ?)"
+    params = [g.user["country"], now_iso]
     if month:
         where += " AND substr(s.created_at, 1, 7) = ?"
         params.append(month)
@@ -132,8 +133,9 @@ def get_slt_leaderboard():
         return make_error("VALIDATION_FAILED", "'period' must be 'month' or 'all'.", 400)
 
     month = datetime.now(timezone.utc).strftime("%Y-%m") if period == "month" else None
-    where = "s.visibility = 'VISIBLE' AND s.country = ?"
-    params = [g.user["country"]]
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    where = "s.visibility = 'VISIBLE' AND s.country = ? AND (s.scheduled_for IS NULL OR s.scheduled_for <= ?)"
+    params = [g.user["country"], now_iso]
     if month:
         where += " AND substr(s.created_at, 1, 7) = ?"
         params.append(month)

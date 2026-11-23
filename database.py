@@ -87,6 +87,7 @@ def create_shoutouts_tables():
         created_at TEXT NOT NULL,
         edited_at TEXT,
         kind TEXT NOT NULL DEFAULT 'STANDARD',
+        scheduled_for TEXT,
         FOREIGN KEY (sender_id) REFERENCES employees(employee_id),
         FOREIGN KEY (target_team_id) REFERENCES teams(team_id),
         FOREIGN KEY (principle_id) REFERENCES principles(id)
@@ -95,8 +96,11 @@ def create_shoutouts_tables():
     # kind: STANDARD, or SLT for a shout-out an admin posts on the Senior Leadership Team's behalf.
     # Migration: add it if the table was created previously without it.
     cursor.execute("PRAGMA table_info(shoutouts);")
-    if "kind" not in [r["name"] for r in cursor.fetchall()]:
+    existing_cols = [r["name"] for r in cursor.fetchall()]
+    if "kind" not in existing_cols:
         cursor.execute("ALTER TABLE shoutouts ADD COLUMN kind TEXT NOT NULL DEFAULT 'STANDARD';")
+    if "scheduled_for" not in existing_cols:
+        cursor.execute("ALTER TABLE shoutouts ADD COLUMN scheduled_for TEXT DEFAULT NULL;")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS shoutout_recipients (
         shoutout_id INTEGER NOT NULL,
