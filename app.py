@@ -33,7 +33,14 @@ def create_app():
 
     @app.route("/static/avatars/<path:filename>", methods=["GET"])
     def serve_avatar(filename):
-        return send_from_directory(avatars_dir, filename)
+        # The drawn demo pictures are SVG. Its type is set here because Windows doesn't always
+        # know it, and an SVG opened on its own is never allowed to run a script.
+        is_svg = filename.lower().endswith(".svg")
+        response = send_from_directory(avatars_dir, filename, mimetype="image/svg+xml" if is_svg else None)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if is_svg:
+            response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+        return response
 
     @app.route("/health", methods=["GET"])
     def health():

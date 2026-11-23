@@ -6,8 +6,8 @@ Reports (owner: Nathan). Requirement 10. VISIBLE posts only; no privacy threshol
   GET /api/admin/reports/export.csv?from=&to=&kindness=  -> text/csv, one row per shout-out x recipient
 
 Who sees what (src/reports/access.py):
-  admins and the Senior Leadership Team   everything (scope ALL)
-  a manager                               their team only (scope TEAM): the people who report
+  admins                                  everything (scope ALL)
+  a manager, senior leaders included      their team only (scope TEAM): the people who report
                                           directly to them
 
 from / to are calendar dates (YYYY-MM-DD, UTC, inclusive). Leave both out for all time.
@@ -28,6 +28,15 @@ In a TEAM report each figure means:
   topReceivers, topGivers team members only
   teamFlows              empty (byTeam and byGiverTeam cover it)
   export.csv             rows where the sender or the recipient is a team member
+
+Given and received are also reported apart (insights: given, received, byPerson), in both kinds
+of report:
+  given       shout-outs sent by the people the report is about. Never SLT shout-outs.
+  received    shout-outs that recognised at least one of them.
+  byPerson    each person's own two counts. A team report lists every team member, zeros
+              included; a full report lists the BY_PERSON_LIMIT most active people.
+A shout-out from one team member to another is one given and one received, so the two don't add
+up to "total". Across the whole company the two differ only by SLT shout-outs.
 """
 import csv
 import io
@@ -43,6 +52,7 @@ from src.reports.access import MEMBERS, ReportScope, require_reports_access
 reports_bp = Blueprint("reports", __name__)
 
 TOP_N = 5
+BY_PERSON_LIMIT = 50  # rows in byPerson on a full (scope ALL) report
 WEEKDAYS = 7  # 0 = Monday ... 6 = Sunday
 
 NOT_SLT = "s.kind != 'SLT'"
@@ -191,6 +201,60 @@ def report_summary():
 
 
 # ───── insights (new ReportInsightsDto) ─────
+
+def _monthly(conn, where: str, params, months: List[str]) -> List[Dict[str, Any]]:
+    """Shout-outs per month for the posts matching `where` (alias s), one entry per month, gaps as 0."""
+    counts = {
+        r["m"]: r["n"]
+        for r in conn.execute(
+            f"SELECT substr(s.created_at, 1, 7) AS m, COUNT(*) AS n FROM shoutouts s WHERE {where} GROUP BY m", params
+        )
+    }
+    return [{"month": m, "count": counts.get(m, 0)} for m in months]
+
+
+def _given_and_received(conn, scope: ReportScope, sql: Dict[str, str], where: str, params, months: List[str]) -> Dict[str, Any]:
+    """
+    Shout-outs given and shout-outs received as separate figures: each one's total and monthly
+    trend, and both counts for each person. Counts are shout-outs (posts), the same as
+    givenCount and receivedCount on the admin Users page.
+    """
+    given_where = f"{where} AND {sql['giver']}"
+    received_where = f"""{where} AND EXISTS (SELECT 1 FROM shoutout_recipients sr
+                         WHERE sr.shoutout_id = s.id AND {sql['receiver']})"""
+
+    def side(side_where: str) -> Dict[str, Any]:
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM shoutouts s WHERE {side_where}", params).fetchone()["n"]
+        return {"total": total, "byMonth": _monthly(conn, side_where, params, months)}
+
+    # Each person's own counts. A team report is about its members, so all of them are listed,
+    # zeros included; a full report lists whoever gave or received in the period.
+    people = f"e.employee_id IN {MEMBERS}" if scope.is_team else "(gv.n IS NOT NULL OR rc.n IS NOT NULL)"
+    counted = f"""
+        FROM employees e
+        LEFT JOIN teams t ON t.team_id = e.team_id
+        LEFT JOIN (SELECT s.sender_id AS id, COUNT(*) AS n FROM shoutouts s
+                   WHERE {where} AND {NOT_SLT} GROUP BY s.sender_id) gv ON gv.id = e.employee_id
+        LEFT JOIN (SELECT sr.recipient_id AS id, COUNT(*) AS n FROM shoutouts s
+                   JOIN shoutout_recipients sr ON sr.shoutout_id = s.id
+                   WHERE {where} GROUP BY sr.recipient_id) rc ON rc.id = e.employee_id
+        WHERE {people}"""
+    both = list(params) + list(params)
+    listed = conn.execute(f"SELECT COUNT(*) AS n {counted}", both).fetchone()["n"]
+    rows = conn.execute(
+        f"""SELECT e.*, t.team_name, COALESCE(gv.n, 0) AS given, COALESCE(rc.n, 0) AS received {counted}
+            ORDER BY COALESCE(gv.n, 0) + COALESCE(rc.n, 0) DESC, e.employee_name COLLATE NOCASE, e.employee_id
+            LIMIT ?""",
+        both + [listed if scope.is_team else BY_PERSON_LIMIT],
+    ).fetchall()
+
+    return {
+        "given": side(given_where),
+        "received": side(received_where),
+        "byPerson": [{"employee": employee_summary(r), "given": r["given"], "received": r["received"]} for r in rows],
+        "byPersonTotal": listed,
+    }
+
 
 def _top_people(conn, count_sql: str, params) -> List[Dict[str, Any]]:
     rows = conn.execute(
@@ -367,6 +431,7 @@ def report_insights():
             "byGiverTeam": [
                 {"teamId": r["team_id"], "teamName": r["team_name"] or "", "count": r["n"]} for r in by_giver_team
             ],
+            **_given_and_received(conn, scope, sql, where, params, _months_between(eff_from[:7], eff_to[:7])),
         }), 200
     finally:
         conn.close()

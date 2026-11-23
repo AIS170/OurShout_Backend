@@ -84,6 +84,8 @@ def employee_summary(row) -> Dict[str, Any]:
         "teamId": row["team_id"],
         "teamName": row["team_name"] or "",
         "country": row["country"] or "AU",
+        # Added after A4: the person's profile picture, or None (the web app then shows initials).
+        "avatarUrl": row["avatar_url"] if "avatar_url" in row.keys() else None,
     }
 
 

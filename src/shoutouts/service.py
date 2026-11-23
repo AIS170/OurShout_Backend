@@ -1,11 +1,12 @@
 """
-Shout-out service: the newsfeed, likes, edits, giving a shout-out, profiles, and the
+Shout-out service: the newsfeed, likes, comments, edits, giving a shout-out, profiles, and the
 directory lookups the forms need.
 
 Rules enforced here (section A4 of the build plan):
 - The feed only ever returns VISIBLE posts from the caller's country.
 - Likes are idempotent, and like_count is updated in the same transaction.
 - Only the sender can edit a post, and only while it is VISIBLE. Recipients never change.
+- Anyone who can see a post can comment on it. A comment is deleted by its author or an admin.
 - Nobody can recognise themselves, and every recipient must be an active employee.
 """
 import base64
@@ -18,6 +19,8 @@ from src.auth.service import calculate_points_for_employee
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 MAX_TEXT_LENGTH = 500
+MAX_COMMENT_LENGTH = 300
+MAX_COMMENTS_RETURNED = 100
 SORTS = ("newest", "most_liked")
 
 
@@ -72,7 +75,7 @@ def _employee_summary(row) -> Dict[str, Any]:
 
 
 def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
-    """Turns shout-out rows into ShoutoutDto dicts, loading people and likes in bulk."""
+    """Turns shout-out rows into ShoutoutDto dicts, loading people, likes and comment counts in bulk."""
     if not rows:
         return []
     ids = [row["id"] for row in rows]
@@ -97,6 +100,15 @@ def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
         )
     }
 
+    comment_counts = {
+        row["shoutout_id"]: row["total"]
+        for row in conn.execute(
+            f"""SELECT shoutout_id, COUNT(*) AS total FROM shoutout_comments
+                WHERE shoutout_id IN ({marks}) GROUP BY shoutout_id""",
+            ids,
+        )
+    }
+
     dtos = []
     for row in rows:
         target_team = None
@@ -112,6 +124,7 @@ def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
                 "teamId": row["sender_team_id"],
                 "teamName": row["sender_team_name"] or "",
                 "country": row["sender_country"] or "AU",
+                "avatarUrl": row["sender_avatar_url"],
             },
             "recipients": recipients[row["id"]],
             "targetTeam": target_team,
@@ -123,6 +136,7 @@ def _build_dtos(conn, rows, viewer_id: str) -> List[Dict[str, Any]]:
             "country": row["country"],
             "likeCount": row["like_count"],
             "likedByMe": row["id"] in liked,
+            "commentCount": comment_counts.get(row["id"], 0),
             "canEdit": row["sender_id"] == viewer_id,
             "visibility": row["visibility"],
             "createdAt": row["created_at"],
@@ -142,6 +156,7 @@ _SHOUTOUT_SELECT = """
            se.job_title AS sender_job_title,
            se.team_id AS sender_team_id,
            se.country AS sender_country,
+           se.avatar_url AS sender_avatar_url,
            st.team_name AS sender_team_name
     FROM shoutouts s
     JOIN principles p ON p.id = s.principle_id
@@ -260,13 +275,13 @@ def set_like(conn, viewer: Dict[str, Any], shoutout_id: int, liked: bool) -> Dic
 
 # ---------------------------------------------------------------- edit
 
-def _clean_text(value: Any, field: str) -> str:
+def _clean_text(value: Any, field: str, max_length: int = MAX_TEXT_LENGTH) -> str:
     if not isinstance(value, str):
         raise ShoutoutError("VALIDATION_FAILED", f"'{field}' must be text.", 400)
     text = value.strip()
-    if not 1 <= len(text) <= MAX_TEXT_LENGTH:
+    if not 1 <= len(text) <= max_length:
         raise ShoutoutError(
-            "VALIDATION_FAILED", f"'{field}' must be between 1 and {MAX_TEXT_LENGTH} characters.", 400
+            "VALIDATION_FAILED", f"'{field}' must be between 1 and {max_length} characters.", 400
         )
     return text
 
@@ -337,6 +352,101 @@ def edit_shoutout(conn, viewer: Dict[str, Any], shoutout_id: int, body: Any) -> 
 
     updated = _get_visible_row(conn, shoutout_id, viewer)
     return _build_dtos(conn, [updated], viewer["employeeId"])[0]
+
+
+# ---------------------------------------------------------------- comments
+
+_COMMENT_SELECT = """
+    SELECT c.id AS comment_id, c.shoutout_id, c.body, c.created_at AS commented_at,
+           e.*, t.team_name
+    FROM shoutout_comments c
+    JOIN employees e ON e.employee_id = c.author_id
+    LEFT JOIN teams t ON t.team_id = e.team_id
+"""
+
+
+def _comment_dto(row, viewer: Dict[str, Any]) -> Dict[str, Any]:
+    """CommentDto. canDelete is true for the comment's author and for admins."""
+    return {
+        "id": row["comment_id"],
+        "shoutoutId": row["shoutout_id"],
+        "author": _employee_summary(row),
+        "text": row["body"],
+        "createdAt": row["commented_at"],
+        "canDelete": row["employee_id"] == viewer["employeeId"] or viewer.get("role") == "ADMIN",
+    }
+
+
+def _comment_count(conn, shoutout_id: int) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) AS total FROM shoutout_comments WHERE shoutout_id = ?", (shoutout_id,)
+    ).fetchone()["total"]
+
+
+def list_comments(conn, viewer: Dict[str, Any], shoutout_id: int) -> Dict[str, Any]:
+    """
+    GET /api/shoutouts/:id/comments. Returns { items: CommentDto[], commentCount }, oldest first.
+    A very long thread returns its latest MAX_COMMENTS_RETURNED; commentCount is always the total.
+    """
+    _get_visible_row(conn, shoutout_id, viewer)
+    rows = conn.execute(
+        f"""SELECT * FROM (
+                {_COMMENT_SELECT} WHERE c.shoutout_id = ?
+                ORDER BY c.created_at DESC, c.id DESC LIMIT ?
+            ) ORDER BY commented_at, comment_id""",
+        (shoutout_id, MAX_COMMENTS_RETURNED),
+    ).fetchall()
+    return {
+        "items": [_comment_dto(row, viewer) for row in rows],
+        "commentCount": _comment_count(conn, shoutout_id),
+    }
+
+
+def add_comment(conn, viewer: Dict[str, Any], shoutout_id: int, body: Any) -> Dict[str, Any]:
+    """
+    POST /api/shoutouts/:id/comments. Body: { text }, 1 to MAX_COMMENT_LENGTH characters after
+    trimming. Returns { comment: CommentDto, commentCount }.
+    """
+    if not isinstance(body, dict):
+        raise ShoutoutError("VALIDATION_FAILED", "Request body must be a JSON object.", 400)
+    _get_visible_row(conn, shoutout_id, viewer)
+    text = _clean_text(body.get("text"), "text", MAX_COMMENT_LENGTH)
+
+    try:
+        comment_id = conn.execute(
+            "INSERT INTO shoutout_comments (shoutout_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
+            (shoutout_id, viewer["employeeId"], text, utc_now_iso()),
+        ).lastrowid
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    row = conn.execute(f"{_COMMENT_SELECT} WHERE c.id = ?", (comment_id,)).fetchone()
+    return {"comment": _comment_dto(row, viewer), "commentCount": _comment_count(conn, shoutout_id)}
+
+
+def delete_comment(conn, viewer: Dict[str, Any], shoutout_id: int, comment_id: int) -> Dict[str, Any]:
+    """
+    DELETE /api/shoutouts/:id/comments/:commentId. The author can delete their own comment and an
+    admin can delete any. Returns { commentCount }.
+    """
+    _get_visible_row(conn, shoutout_id, viewer)
+    comment = conn.execute(
+        "SELECT author_id FROM shoutout_comments WHERE id = ? AND shoutout_id = ?", (comment_id, shoutout_id)
+    ).fetchone()
+    if not comment:
+        raise ShoutoutError("NOT_FOUND", "Comment not found.", 404)
+    if comment["author_id"] != viewer["employeeId"] and viewer.get("role") != "ADMIN":
+        raise ShoutoutError("FORBIDDEN", "You can only delete your own comments.", 403)
+
+    try:
+        conn.execute("DELETE FROM shoutout_comments WHERE id = ?", (comment_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"commentCount": _comment_count(conn, shoutout_id)}
 
 
 # ---------------------------------------------------------------- filter options
