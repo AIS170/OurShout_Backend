@@ -68,7 +68,7 @@ def create_principles_table():
     conn.close()
 
 def create_shoutouts_tables():
-    """Shout-outs, who received them, and who liked them (used by the newsfeed)."""
+    """Shout-outs, who received them, who liked them and the comments under them (used by the newsfeed)."""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -125,6 +125,22 @@ def create_shoutouts_tables():
     )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shoutouts_sender ON shoutouts(sender_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_recipients_recipient ON shoutout_recipients(recipient_id);")
+    # Comments under a shout-out. Deleting a comment removes its row.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS shoutout_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shoutout_id INTEGER NOT NULL,
+        author_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (shoutout_id) REFERENCES shoutouts(id),
+        FOREIGN KEY (author_id) REFERENCES employees(employee_id)
+    );
+    """)
+    # A post's comments are read oldest first.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comments_shoutout ON shoutout_comments(shoutout_id, created_at, id);"
+    )
     conn.commit()
     conn.close()
 

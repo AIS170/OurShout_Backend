@@ -1,10 +1,13 @@
 """
 Who may open Reports, and how much they see (owner: Nathan).
 
-  ADMIN, SLT   everything: every manager and employee  -> scope ALL
+  ADMIN        everything: every manager and employee  -> scope ALL
   a manager    only the people who report directly     -> scope TEAM
                to them (not the people under those)
   anyone else  403
+
+A manager is anyone with people reporting to them. That includes the Senior Leadership Team:
+a director or head gets a report on their own direct reports, the same as any other manager.
 
 The scope always comes from who is signed in, never from the request, so a manager can't ask
 for another team's report. /api/me tells the web app which of these applies (reportsAccess).
@@ -25,7 +28,7 @@ def direct_reports(conn, manager_id: str) -> List[str]:
     """
     The people whose manager is this person. Leavers are left out.
     Direct reports only: a manager of managers doesn't see the people under those managers
-    (only the Senior Leadership Team and admins see everyone).
+    (only admins see everyone).
     """
     rows = conn.execute(
         """
@@ -62,13 +65,13 @@ class ReportScope:
 
 
 def require_reports_access(f):
-    """Admins and SLT (everything) or managers (their direct reports). Puts the scope on g.report_scope."""
+    """Admins (everything) or managers (their direct reports). Puts the scope on g.report_scope."""
     @wraps(f)
     @require_auth
     def decorated(*args, **kwargs):
         access = g.user.get("reportsAccess")
         if access not in ("ALL", "TEAM"):
-            return make_error("FORBIDDEN", "Reports are for admins, the leadership team and managers.", 403)
+            return make_error("FORBIDDEN", "Reports are for admins and managers.", 403)
         g.report_scope = ReportScope(access, g.user["employeeId"])
         return f(*args, **kwargs)
 

@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
 from database import get_db, init_db
+from src.avatars.demo import seed_picture
+from src.avatars.storage import LocalAvatarStorage
 
 # 15 Official Sandoz Australia Teams
 TEAMS_DATA = [
@@ -33,9 +35,9 @@ PRINCIPLES_DATA = [
 
 # 55 AU Employees: (employee_id, employee_name, email_id, team_id, manager_id, country, job_title, role, status)
 # role values: 'EMPLOYEE' | 'SLT' | 'ADMIN'. SLT = Senior Leadership Team: the Country President and the
-#   directors and heads who report to him. They see the same Reports page as an admin.
+#   directors and heads who report to him.
 #   A manager is not a role: it is anyone with people reporting to them (manager_id), and they
-#   get a Reports page for their own team.
+#   get a Reports page for their own team. That goes for the SLT too; only an admin sees everyone.
 # status values: 'ACTIVE' | 'SUSPENDED' | 'INACTIVE'
 EMPLOYEES_DATA = [
     # T02: Commercial & General Management
@@ -127,17 +129,21 @@ EMPLOYEES_DATA = [
 # Demo shout-outs for the newsfeed. "days_ago" is counted back from the moment you seed, so the
 # feed always looks recent. Use either "to" (hand-picked people) or "team" (every active member
 # of that team except the sender). "liked_by" lists the employees who liked the post.
+# "comments" is optional: (employee, text, hours after the post) for each comment under it.
 SHOUTOUTS_DATA = [
     # An SLT shout-out: posted by the admin (Natalie) on the Senior Leadership Team's behalf.
     # The feed shows it in gold, as from the leadership team.
     {"from": "E0039", "to": ["E0025"], "principle": 1, "kindness": False, "days_ago": 0.2, "kind": "SLT",
      "reason": "Charlotte brought R&D, Regulatory and Supply together to get the biosimilar submission in three weeks early.",
      "impact": "Patients will have access to the treatment a full quarter sooner than planned.",
-     "liked_by": ["E0001", "E0024", "E0027", "E0031", "E0005"]},
+     "liked_by": ["E0001", "E0024", "E0027", "E0031", "E0005"],
+     "comments": [("E0024", "Proud of you, Charlotte. Well earned.", 1)]},
     {"from": "E0013", "to": ["E0005"], "principle": 5, "kindness": True, "days_ago": 0.4,
      "reason": "Priya spent her lunch break walking me through the new pharmacy ordering portal.",
      "impact": "I can now answer my customers' questions myself instead of escalating them.",
-     "liked_by": ["E0011", "E0003", "E0004", "E0039", "E0016", "E0012"]},
+     "liked_by": ["E0011", "E0003", "E0004", "E0039", "E0016", "E0012"],
+     "comments": [("E0011", "That portal trips everyone up at first. Nice one for sharing what you know, Priya.", 1),
+                  ("E0005", "Happy to help, Aisha. Shout if anything else comes up.", 3)]},
     {"from": "E0005", "to": ["E0013"], "principle": 1, "kindness": True, "days_ago": 1.2,
      "reason": "Aisha jumped in to help Retail with a hospital stock question that wasn't her job at all.",
      "impact": "Two pharmacies got their biosimilar orders on time instead of a week late.",
@@ -149,7 +155,10 @@ SHOUTOUTS_DATA = [
     {"from": "E0005", "team": "T06", "principle": 2, "kindness": False, "days_ago": 5.0, "edited": True,
      "reason": "The team ran every onboarding session in October, even with two people on leave. \"Whatever it takes\" & then some!",
      "impact": "All twelve new starters had their laptops, logins and a buddy on day one.",
-     "liked_by": ["E0005", "E0013", "E0011", "E0001", "E0002", "E0044", "E0048", "E0033", "E0017"]},
+     "liked_by": ["E0005", "E0013", "E0011", "E0001", "E0002", "E0044", "E0048", "E0033", "E0017"],
+     "comments": [("E0040", "Thanks Priya, that means a lot to the team.", 2),
+                  ("E0001", "A great effort from everyone in Human Resources.", 20),
+                  ("E0043", "Day one matters. Glad the new starters felt looked after.", 26)]},
     {"from": "E0013", "to": ["E0005"], "principle": 2, "kindness": False, "days_ago": 6.3,
      "reason": "Priya chased down three overdue pharmacy orders in one afternoon.",
      "impact": "Every order shipped the next morning and the customers stayed with us.",
@@ -161,7 +170,8 @@ SHOUTOUTS_DATA = [
     {"from": "E0039", "to": ["E0005", "E0013", "E0011", "E0018", "E0019"], "principle": 3, "kindness": True, "days_ago": 11.0,
      "reason": "You five wrote the one-page guide to the new leave policy that everyone actually read.",
      "impact": "Questions to Human Resources dropped by half in the first fortnight.",
-     "liked_by": ["E0005", "E0040", "E0041", "E0042", "E0043", "E0001", "E0002", "E0044", "E0033", "E0048", "E0017", "E0024"]},
+     "liked_by": ["E0005", "E0040", "E0041", "E0042", "E0043", "E0001", "E0002", "E0044", "E0033", "E0048", "E0017", "E0024"],
+     "comments": [("E0013", "It was a real team effort. Thanks for trusting us with it, Natalie.", 4)]},
     {"from": "E0013", "to": ["E0005"], "principle": 1, "kindness": True, "days_ago": 13.2,
      "reason": "Priya covered my hospital visits while I was at the conference.",
      "impact": "No customer went a week without hearing from us.",
@@ -218,8 +228,27 @@ def seed_auction_items(cursor):
         for item in AUCTION_ITEMS_DATA
     ])
 
+def seed_avatars(cursor):
+    """
+    Gives every employee a profile picture from the seed_avatars/ folder: a real photo if one
+    was dropped in for them, otherwise the drawn portrait that ships with the repo (see
+    src/avatars/demo.py). The live pictures folder is emptied first, so uploads from before the
+    reseed don't linger. Anyone can replace their own from their profile page; in the final
+    build the pictures come from SharePoint instead. Returns how many of each kind were used.
+    """
+    storage = LocalAvatarStorage()
+    storage.clear()
+    used = {"photo": 0, "portrait": 0, "generated": 0}
+    for employee in EMPLOYEES_DATA:
+        employee_id = employee[0]
+        data, extension, kind = seed_picture(employee_id)
+        url = storage.save(employee_id, data, extension, label="demo")
+        cursor.execute("UPDATE employees SET avatar_url = ? WHERE employee_id = ?", (url, employee_id))
+        used[kind] += 1
+    return used
+
 def seed_shoutouts(cursor):
-    """Loads the demo shout-outs, their recipients and their likes."""
+    """Loads the demo shout-outs, their recipients, their likes and their comments."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
 
     def iso(moment):
@@ -261,6 +290,12 @@ def seed_shoutouts(cursor):
             "INSERT INTO likes (shoutout_id, employee_id, created_at) VALUES (?, ?, ?)",
             [(shoutout_id, liker, iso(created + timedelta(hours=2))) for liker in liked_by]
         )
+        # A comment is never dated in the future, even on a post seeded a few hours ago.
+        cursor.executemany(
+            "INSERT INTO shoutout_comments (shoutout_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
+            [(shoutout_id, author, text, iso(min(created + timedelta(hours=hours), now)))
+             for author, text, hours in post.get("comments", [])]
+        )
 
 def seed_database():
     conn = get_db()
@@ -269,6 +304,7 @@ def seed_database():
 
     cursor.execute("DROP TABLE IF EXISTS auction_bids;")
     cursor.execute("DROP TABLE IF EXISTS auction_items;")
+    cursor.execute("DROP TABLE IF EXISTS shoutout_comments;")
     cursor.execute("DROP TABLE IF EXISTS likes;")
     cursor.execute("DROP TABLE IF EXISTS shoutout_recipients;")
     cursor.execute("DROP TABLE IF EXISTS shoutouts;")
@@ -299,7 +335,11 @@ def seed_database():
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, EMPLOYEES_DATA)
 
-    print(f"🌱 Seeding {len(SHOUTOUTS_DATA)} demo shout-outs with recipients and likes...")
+    print(f"🌱 Seeding {len(EMPLOYEES_DATA)} profile pictures from seed_avatars/...")
+    used = seed_avatars(cursor)
+    print(f"   {used['photo']} photos, {used['portrait']} drawn portraits, {used['generated']} generated.")
+
+    print(f"🌱 Seeding {len(SHOUTOUTS_DATA)} demo shout-outs with recipients, likes and comments...")
     seed_shoutouts(cursor)
 
     print(f"🌱 Seeding {len(AUCTION_ITEMS_DATA)} demo auction items (one open for bids, one coming soon)...")

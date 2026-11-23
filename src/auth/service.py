@@ -286,9 +286,10 @@ def run_auth_pipeline(claims: Dict[str, Any], allow_suspended: bool = False) -> 
 
         points = calculate_points_for_employee(conn, oid)
 
-        # Who may open Reports: admins and the Senior Leadership Team see everything ("ALL");
-        # anyone with people reporting to them sees their own team ("TEAM"); others don't (None).
-        if role in ("ADMIN", "SLT"):
+        # Who may open Reports: admins see everything ("ALL"); anyone with people reporting to
+        # them sees their own team ("TEAM"); others don't (None). The Senior Leadership Team are
+        # managers like any other here: a director or head sees their own direct reports.
+        if role == "ADMIN":
             reports_access = "ALL"
         else:
             has_reports = conn.execute(
