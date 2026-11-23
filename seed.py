@@ -228,6 +228,14 @@ AUCTION_ITEMS_DATA = [
      "starting_bid": 50, "opens_in_days": -1, "closes_in_days": 3},
     {"name": "Team lunch voucher", "description": "Lunch for you and five teammates at a place of your choice.",
      "starting_bid": 100, "opens_in_days": 2, "closes_in_days": 7},
+    {"name": "Coaching with Clint", "description": "A dedicated 1-on-1 executive coaching and leadership mentoring session with Clint.",
+     "starting_bid": 75, "opens_in_days": -1, "closes_in_days": 4},
+    {"name": "Cooking with Liz", "description": "An exclusive culinary masterclass and personalized cooking experience with Liz.",
+     "starting_bid": 60, "opens_in_days": -1, "closes_in_days": 5},
+    {"name": "Warehouse tour with Wendy", "description": "An insider behind-the-scenes guided tour of our warehouse facility and supply chain operations with Wendy.",
+     "starting_bid": 40, "opens_in_days": -1, "closes_in_days": 6},
+    {"name": "Dinner with Mel", "description": "An exclusive dining experience and evening discussion with Mel at a premier venue.",
+     "starting_bid": 80, "opens_in_days": -1, "closes_in_days": 7},
 ]
 
 def seed_auction_items(cursor):
