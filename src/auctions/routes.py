@@ -58,6 +58,18 @@ def place_bid(item_id: int):
         conn.close()
 
 
+@auctions_bp.route("/api/auctions/<int:item_id>/bids", methods=["DELETE"])
+@auctions_bp.route("/api/auctions/<int:item_id>/bids/withdraw", methods=["POST"])
+@require_auth
+def withdraw_bid(item_id: int):
+    conn = get_db()
+    try:
+        item = service.withdraw_bid(conn, item_id, g.user)
+        return jsonify({"item": item, "balance": service.balance(conn, g.user["employeeId"])}), 200
+    finally:
+        conn.close()
+
+
 @auctions_bp.route("/api/admin/auctions", methods=["GET"])
 @require_admin
 def list_admin_auctions():

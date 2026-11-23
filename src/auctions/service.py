@@ -260,6 +260,66 @@ def place_bid(conn, item_id: int, bidder: Dict[str, Any], amount: Any) -> Dict[s
     return get_item(conn, item_id, bidder_id)
 
 
+def withdraw_bid(conn, item_id: int, bidder: Dict[str, Any]) -> Dict[str, Any]:
+    """Removes the leading bid on an item if and only if the caller placed it."""
+    bidder_id = bidder["employeeId"]
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        now = now_iso()
+        item = conn.execute("SELECT * FROM auction_items WHERE id = ?", (item_id,)).fetchone()
+        if not item or item["country"] != bidder["country"]:
+            raise AuctionError("NOT_FOUND", f"Auction item {item_id} not found.", 404)
+
+        status = item_status(item, now)
+        if status == "ENDED":
+            raise AuctionError("AUCTION_NOT_OPEN", "You cannot withdraw a bid from a concluded auction.", 409)
+        if status == "UPCOMING":
+            raise AuctionError("AUCTION_NOT_OPEN", "Bidding on this item hasn't opened yet.", 409)
+
+        lead = conn.execute(
+            "SELECT * FROM auction_bids WHERE item_id = ? ORDER BY amount DESC, id LIMIT 1", (item_id,)
+        ).fetchone()
+
+        if not lead or lead["bidder_id"] != bidder_id:
+            raise AuctionError(
+                "NOT_HIGHEST_BIDDER",
+                "You can only withdraw a bid if you are currently the highest bidder.",
+                403,
+            )
+
+        initial_amount = lead["amount"]
+
+        # Delete caller's leading bid(s) until caller is no longer the highest bidder
+        while True:
+            cur = conn.execute(
+                "SELECT * FROM auction_bids WHERE item_id = ? ORDER BY amount DESC, id LIMIT 1", (item_id,)
+            ).fetchone()
+            if cur and cur["bidder_id"] == bidder_id:
+                conn.execute("DELETE FROM auction_bids WHERE id = ?", (cur["id"],))
+            else:
+                break
+
+        new_lead = conn.execute(
+            "SELECT * FROM auction_bids WHERE item_id = ? ORDER BY amount DESC, id LIMIT 1", (item_id,)
+        ).fetchone()
+
+        record_audit(
+            conn,
+            bidder_id,
+            "AUCTION_BID_WITHDRAWN",
+            "AUCTION",
+            item_id,
+            before={"currentBid": initial_amount, "bidderId": bidder_id},
+            after={"currentBid": new_lead["amount"] if new_lead else None, "bidderId": new_lead["bidder_id"] if new_lead else None},
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_item(conn, item_id, bidder_id)
+
+
 # ---------------------------------------------------------------- admin: add and remove items
 
 def _clean_text(name: str, value: Any, max_length: int, required: bool) -> str:
