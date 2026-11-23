@@ -39,6 +39,49 @@ def _board(conn, count_sql: str, params) -> list:
     return [{"employee": employee_summary(r), "count": r["n"]} for r in rows]
 
 
+def _slt_board(conn, where: str, params: list) -> list:
+    """Returns employees recognized by the Senior Leadership Team (kind == 'SLT')."""
+    slt_where = f"{where} AND s.kind = 'SLT'"
+    rows = conn.execute(
+        f"""
+        SELECT e.*, t.team_name, COUNT(DISTINCT s.id) AS n,
+               MAX(s.created_at) AS latest_created_at,
+               (
+                   SELECT p2.name FROM shoutouts s2
+                   JOIN principles p2 ON p2.id = s2.principle_id
+                   JOIN shoutout_recipients sr2 ON sr2.shoutout_id = s2.id
+                   WHERE sr2.recipient_id = e.employee_id AND s2.kind = 'SLT' AND s2.visibility = 'VISIBLE'
+                   ORDER BY s2.created_at DESC LIMIT 1
+               ) AS latest_principle,
+               (
+                   SELECT s3.reason FROM shoutouts s3
+                   JOIN shoutout_recipients sr3 ON sr3.shoutout_id = s3.id
+                   WHERE sr3.recipient_id = e.employee_id AND s3.kind = 'SLT' AND s3.visibility = 'VISIBLE'
+                   ORDER BY s3.created_at DESC LIMIT 1
+               ) AS latest_reason
+        FROM shoutout_recipients sr
+        JOIN shoutouts s ON s.id = sr.shoutout_id
+        JOIN employees e ON e.employee_id = sr.recipient_id
+        LEFT JOIN teams t ON t.team_id = e.team_id
+        WHERE {slt_where}
+        GROUP BY e.employee_id
+        ORDER BY n DESC, latest_created_at DESC, e.employee_name COLLATE NOCASE
+        """,
+        params,
+    ).fetchall()
+
+    return [
+        {
+            "employee": employee_summary(r),
+            "count": r["n"],
+            "latestPrinciple": r["latest_principle"] or "",
+            "latestReason": r["latest_reason"] or "",
+            "latestCreatedAt": r["latest_created_at"] or "",
+        }
+        for r in rows
+    ]
+
+
 @leaderboard_bp.route("/api/leaderboard", methods=["GET"])
 @require_auth
 def get_leaderboard():
@@ -69,11 +112,39 @@ def get_leaderboard():
                 FROM shoutouts s WHERE {where} AND s.kind != 'SLT' GROUP BY s.sender_id""",
             params,
         )
+        slt_honorees = _slt_board(conn, where, params)
         return jsonify({
             "period": period,
             "month": month,
             "mostShoutedOut": shouted_out,
             "mostShoutOutsGiven": given,
+            "sltHonorees": slt_honorees,
+        }), 200
+    finally:
+        conn.close()
+
+
+@leaderboard_bp.route("/api/leaderboard/slt", methods=["GET"])
+@require_auth
+def get_slt_leaderboard():
+    period = (request.args.get("period") or "month").strip().lower()
+    if period not in PERIODS:
+        return make_error("VALIDATION_FAILED", "'period' must be 'month' or 'all'.", 400)
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m") if period == "month" else None
+    where = "s.visibility = 'VISIBLE' AND s.country = ?"
+    params = [g.user["country"]]
+    if month:
+        where += " AND substr(s.created_at, 1, 7) = ?"
+        params.append(month)
+
+    conn = get_db()
+    try:
+        honorees = _slt_board(conn, where, params)
+        return jsonify({
+            "period": period,
+            "month": month,
+            "honorees": honorees,
         }), 200
     finally:
         conn.close()
