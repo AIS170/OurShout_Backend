@@ -200,6 +200,49 @@ def report_summary():
         conn.close()
 
 
+def _get_kindness_goal_val(conn) -> int:
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = 'kindness_goal'").fetchone()
+        return int(row["value"]) if row else 100
+    except Exception:
+        return 100
+
+
+@reports_bp.route("/api/admin/reports/kindness-goal", methods=["GET"])
+@require_reports_access
+def get_kindness_goal():
+    conn = get_db()
+    try:
+        return jsonify({"goal": _get_kindness_goal_val(conn)}), 200
+    finally:
+        conn.close()
+
+
+@reports_bp.route("/api/admin/reports/kindness-goal", methods=["POST"])
+@require_reports_access
+def set_kindness_goal():
+    data = request.get_json(silent=True) or {}
+    goal_raw = data.get("goal")
+    try:
+        goal = int(goal_raw)
+        if goal <= 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": "VALIDATION_FAILED", "message": "'goal' must be a positive integer."}}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    try:
+        conn.execute("""
+            INSERT INTO app_settings (key, value, updated_at) VALUES ('kindness_goal', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """, (str(goal), now))
+        conn.commit()
+        return jsonify({"goal": goal}), 200
+    finally:
+        conn.close()
+
+
 # ───── insights (new ReportInsightsDto) ─────
 
 def _monthly(conn, where: str, params, months: List[str]) -> List[Dict[str, Any]]:
@@ -408,7 +451,7 @@ def report_insights():
             "crossTeam": {"recipientRows": rows["n"], "crossTeamRows": rows["cross_team"],
                           "share": _share(rows["cross_team"], rows["n"])},
             "teamShoutouts": {"count": posts["team_posts"], "share": _share(posts["team_posts"], total)},
-            "kindness": {"count": posts["kind"], "share": _share(posts["kind"], total)},
+            "kindness": {"count": posts["kind"], "share": _share(posts["kind"], total), "goal": _get_kindness_goal_val(conn)},
             "likes": {"total": posts["likes"], "averagePerPost": round(posts["likes"] / total, 2) if total else 0.0},
             "mostLiked": {
                 "shoutoutId": most_liked["id"],

@@ -188,12 +188,26 @@ def create_auction_tables():
     conn.commit()
     conn.close()
 
+def create_settings_table():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """)
+    conn.commit()
+    conn.close()
+
 def init_db():
     create_teams_table()
     create_employees_table()
     create_principles_table()
     create_shoutouts_tables()
     create_auction_tables()
+    create_settings_table()
 
 if __name__ == "__main__":
     init_db()
